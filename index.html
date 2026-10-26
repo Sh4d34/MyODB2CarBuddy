@@ -1055,7 +1055,7 @@ class SimTransport {
     this.connected = false;
     this.stored = ['0299', '2463', '0401'];
     this.pending = ['0101'];
-    this.mfr = [['2263', 0x00, 0x8B]]; // mémoire constructeur (UDS) : code invisible en mode 03
+    this.mfr = [['2263', 0x22, 0xE9]]; // mémoire constructeur (UDS) : code invisible en mode 03
     this.baro = 100;
     this.vin = 'JN1DEMT32F0000001'; // VIN fictif de démonstration
     this.s = {
@@ -3401,6 +3401,17 @@ function pidReport() {
 /* =====================================================================
  * Codes défauts
  * ===================================================================== */
+/** Type de panne UDS (3e octet du code, SAE J2012) : précise la nature du défaut. */
+const FTB_NAMES = {
+  0x01: 'défaut électrique général', 0x11: 'court-circuit à la masse', 0x12: 'court-circuit au plus',
+  0x13: 'circuit ouvert', 0x16: 'tension du circuit trop basse', 0x17: 'tension du circuit trop haute',
+  0x1C: 'tension hors plage', 0x21: 'valeur sous le minimum', 0x22: 'valeur au-dessus du maximum',
+  0x23: 'signal bloqué bas', 0x24: 'signal bloqué haut', 0x29: 'signal invalide', 0x2F: 'signal instable',
+  0x62: 'comparaison de signaux incohérente', 0x64: 'signal non plausible', 0x71: 'actionneur bloqué',
+  0x72: 'actionneur bloqué ouvert', 0x73: 'actionneur bloqué fermé', 0x92: 'performance ou fonctionnement incorrect',
+  0x98: 'surchauffe du composant',
+};
+
 /** Octet de statut UDS (ISO 14229) → libellés lisibles. */
 function udsStatusLabels(st) {
   const out = [];
@@ -3462,10 +3473,10 @@ function renderDtc() {
       const flags = status == null ? '' : udsStatusLabels(status).map((t) => `<span class="chip border-zinc-700 text-zinc-300">${t}</span>`).join(' ');
       return `
         <li class="flex items-start gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
-          <span class="rounded-lg ${color[1]} px-2 py-1 font-mono text-base font-bold">${code}</span>
+          <span class="rounded-lg ${color[1]} px-2 py-1 font-mono text-base font-bold">${code}${ftb ? `<span class="opacity-60">-${hex2(ftb)}</span>` : ''}</span>
           <div class="min-w-0 flex-1">
             <p class="text-sm text-zinc-100">${esc(info.desc)}</p>
-            <p class="mt-0.5 text-xs text-zinc-500">${info.sys}${info.sub ? ' · ' + info.sub : ''} · ${info.manufacturer ? 'Code constructeur' : 'Générique SAE'} · ${esc(ecuName(ecu))}${ftb ? ` · type de panne 0x${hex2(ftb)}` : ''}</p>
+            <p class="mt-0.5 text-xs text-zinc-500">${info.sys}${info.sub ? ' · ' + info.sub : ''} · ${info.manufacturer ? 'Code constructeur' : 'Générique SAE'} · ${esc(ecuName(ecu))}${ftb ? ` · type de panne ${hex2(ftb)}${FTB_NAMES[ftb] ? ` : <b class="text-zinc-300">${FTB_NAMES[ftb]}</b>` : ''}` : ''}</p>
             ${flags ? `<div class="mt-1.5 flex flex-wrap gap-1">${flags}</div>` : ''}
           </div>
           <a class="btn btn-ghost btn-sm shrink-0" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(code)}+${q}" title="Rechercher ce code"><i data-lucide="external-link" class="h-3.5 w-3.5"></i></a>
@@ -3561,7 +3572,7 @@ async function scanDtcs() {
     const uds = state.dtc.uds || [];
     const n = state.dtc.stored.length + state.dtc.pending.length + perm.length + uds.length;
     const codes = (arr) => arr.map((x) => x.code).join(', ');
-    Log.add(n ? 'warn' : 'ok', `Scan terminé : ${state.dtc.stored.length} confirmé(s) [${codes(state.dtc.stored)}], ${state.dtc.pending.length} en attente [${codes(state.dtc.pending)}], ${state.dtc.permanent ? `${perm.length} permanent(s) [${codes(perm)}]` : 'permanents non lus'}, ${state.dtc.uds ? `${uds.length} constructeur [${uds.map((x) => `${x.code} statut 0x${hex2(x.status)}`).join(', ')}]` : 'mémoire constructeur non lue'}`);
+    Log.add(n ? 'warn' : 'ok', `Scan terminé : ${state.dtc.stored.length} confirmé(s) [${codes(state.dtc.stored)}], ${state.dtc.pending.length} en attente [${codes(state.dtc.pending)}], ${state.dtc.permanent ? `${perm.length} permanent(s) [${codes(perm)}]` : 'permanents non lus'}, ${state.dtc.uds ? `${uds.length} constructeur [${uds.map((x) => `${x.code}-${hex2(x.ftb)} statut 0x${hex2(x.status)}`).join(', ')}]` : 'mémoire constructeur non lue'}`);
     toast(n ? `${n} code(s) défaut trouvé(s).` : 'Aucun code défaut.', n ? 'warn' : 'ok');
   } catch (e) {
     Log.add('error', `Scan des défauts impossible : ${e.message}`);
