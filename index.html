@@ -781,14 +781,17 @@ class BleTransport {
     this.decoder = new TextDecoder('utf-8');
     this.encoder = new TextEncoder();
     this.manualClose = false;
+    this.ready = false; // vrai une fois la liaison complètement établie
     this._onNotify = (ev) => {
       const v = ev.target.value;
       this.onData?.(this.decoder.decode(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)));
     };
     this._onGattDisconnected = () => {
-      Log.add(this.manualClose ? 'info' : 'warn', `GATT déconnecté (${this.device?.name || 'adaptateur'}).`);
+      const lost = this.ready && !this.manualClose;
+      Log.add(lost ? 'warn' : 'info', `GATT déconnecté (${this.device?.name || 'adaptateur'}).`);
       this.rx = this.tx = null;
-      if (!this.manualClose) this.onDisconnect?.();
+      // Pendant l'établissement de la liaison, une coupure est gérée par les nouvelles tentatives de _setupGatt.
+      if (lost) { this.ready = false; this.onDisconnect?.(); }
     };
   }
 
@@ -807,8 +810,6 @@ class BleTransport {
     Log.add('info', `Ouverture du sélecteur Bluetooth (${this.acceptAll ? 'tous les appareils' : 'filtre adaptateurs OBD'})…`);
     this.device = await navigator.bluetooth.requestDevice(options);
     Log.add('info', `Appareil sélectionné : « ${this.device.name || 'sans nom'} » (id ${this.device.id})`);
-    this.device.removeEventListener('gattserverdisconnected', this._onGattDisconnected);
-    this.device.addEventListener('gattserverdisconnected', this._onGattDisconnected);
     await this._setupGatt();
     return { name: this.device.name || 'Adaptateur BLE' };
   }
@@ -821,11 +822,45 @@ class BleTransport {
     return { name: this.device.name || 'Adaptateur BLE' };
   }
 
+  /**
+   * Établit la liaison GATT avec plusieurs tentatives : sous Android, les adaptateurs BLE bon marché
+   * coupent souvent la première connexion pendant la découverte des services (erreur GATT 133).
+   */
   async _setupGatt() {
-    Log.add('info', 'Connexion au serveur GATT…');
+    const MAX = 4;
+    this.manualClose = false;
+    this.ready = false;
+    // Un seul écouteur par appareil (Chrome renvoie le même objet d'une sélection à l'autre).
+    this.device.removeEventListener('gattserverdisconnected', this._onGattDisconnected);
+    this.device.addEventListener('gattserverdisconnected', this._onGattDisconnected);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this._setupGattOnce(attempt, MAX);
+        this.ready = true;
+        return;
+      } catch (e) {
+        const retryable = e.name === 'NetworkError' || /disconnected|connection failed|unknown reason|GATT operation failed/i.test(e.message);
+        try { if (this.device.gatt.connected) this.device.gatt.disconnect(); } catch { /* ignoré */ }
+        this.rx = this.tx = null;
+        if (!retryable || attempt >= MAX) {
+          if (retryable) e.message = `${e.message} (après ${MAX} tentatives)`;
+          throw e;
+        }
+        Log.add('warn', `Tentative ${attempt}/${MAX} échouée : ${e.message} — nouvel essai dans ${attempt} s…`);
+        await sleep(1000 * attempt);
+      }
+    }
+  }
+
+  async _setupGattOnce(attempt, max) {
+    Log.add('info', `Connexion au serveur GATT (tentative ${attempt}/${max})…`);
+    const t0 = performance.now();
     const server = await this.device.gatt.connect();
+    Log.add('info', `GATT connecté en ${Math.round(performance.now() - t0)} ms — découverte des services…`);
+    await sleep(300); // certaines piles Bluetooth Android ont besoin d'un court délai avant la découverte
+    const t1 = performance.now();
     const services = await server.getPrimaryServices();
-    Log.add('info', `Services GATT trouvés : ${services.map((s) => s.uuid.slice(4, 8)).join(', ') || 'aucun'}`);
+    Log.add('info', `Services GATT trouvés en ${Math.round(performance.now() - t1)} ms : ${services.map((s) => s.uuid.slice(4, 8)).join(', ') || 'aucun'}`);
 
     // On privilégie l'ordre des services connus, puis on cherche une paire notify + write.
     const rank = (s) => { const i = BLE_SERVICES.indexOf(s.uuid); return i === -1 ? 99 : i; };
@@ -873,6 +908,7 @@ class BleTransport {
 
   async disconnect() {
     this.manualClose = true;
+    this.ready = false;
     try { await this.rx?.stopNotifications(); } catch { /* déjà fermé */ }
     if (this.device?.gatt?.connected) this.device.gatt.disconnect();
     this.rx = this.tx = null;
@@ -2077,7 +2113,7 @@ function explainError(e, transport) {
     return { level: 'error', text: 'Aucun service compatible sur cet appareil. Adaptateur Bluetooth classique (non BLE) ? Essayez « Afficher tous les appareils ».' };
   }
   if (name === 'SecurityError') return { level: 'error', text: 'Accès Bluetooth refusé : la page doit être servie en HTTPS ou sur localhost, et l\'autorisation accordée.' };
-  if (name === 'NetworkError') return { level: 'error', text: 'Connexion GATT impossible : adaptateur hors de portée, non alimenté (contact coupé) ou déjà connecté à un autre téléphone / une autre application.' };
+  if (name === 'NetworkError') return { level: 'error', text: 'Connexion Bluetooth impossible. Vérifiez : contact mis, adaptateur NON appairé dans les réglages Bluetooth d\'Android, aucune autre appli OBD ouverte (Car Scanner, Torque…). Puis débranchez / rebranchez l\'adaptateur, coupez / rallumez le Bluetooth du téléphone et réessayez.' };
   if (name === 'NotSupportedError') return { level: 'error', text: `Opération Bluetooth non supportée par cet appareil : ${msg}` };
   if (name === 'InvalidStateError') return { level: 'error', text: `État Bluetooth invalide : ${msg}` };
   if (e instanceof TransportError) return { level: 'error', text: msg };
