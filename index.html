@@ -202,10 +202,17 @@
               <span><span class="text-zinc-200">Mode démo (simulateur ELM327)</span>
                 <span class="block text-xs text-zinc-500">Teste l'interface sans véhicule : ralenti → accélération → croisière, avec codes défauts fictifs.</span></span>
             </label>
-            <label id="sim-leak-row" class="ml-6 hidden items-start gap-2.5">
-              <input id="opt-sim-leak" type="checkbox" class="check mt-0.5">
-              <span class="text-zinc-300">Simuler une fuite d'air / chute de suralimentation</span>
-            </label>
+            <div id="sim-fault-row" class="ml-6 hidden">
+              <label class="label" for="opt-sim-fault">Panne simulée (modifiable en cours de route)</label>
+              <select id="opt-sim-fault" class="input">
+                <option value="none">Aucune (véhicule sain)</option>
+                <option value="leak">Fuite d'air après le turbo (durite / échangeur)</option>
+                <option value="vgt">Géométrie variable du turbo grippée</option>
+                <option value="rail">Pression de rampe insuffisante (filtre à gazole)</option>
+                <option value="egr">Vanne EGR bloquée ouverte</option>
+                <option value="limp">Mode dégradé (consigne turbo bridée)</option>
+              </select>
+            </div>
           </div>
 
           <dl id="adapter-info" class="rounded-xl border border-zinc-800 bg-zinc-950/40 px-4 py-1"></dl>
@@ -251,6 +258,11 @@
       </div>
       <div id="live-main" class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"></div>
       <div id="live-secondary" class="grid grid-cols-2 gap-3 lg:grid-cols-4"></div>
+      <div class="flex flex-wrap items-center justify-between gap-2 pt-2">
+        <h2 class="card-title"><i data-lucide="microscope" class="h-4 w-4"></i>Données avancées du calculateur</h2>
+        <span id="adv-count" class="text-xs text-zinc-500"></span>
+      </div>
+      <div id="live-advanced" class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3"></div>
     </section>
 
     <!-- ============================== DIAGNOSTIC ============================== -->
@@ -296,6 +308,7 @@
               <span class="flex items-center gap-1.5"><span class="h-0.5 w-5 border-t-2 border-dashed border-amber-400"></span>MAP attendue</span>
               <span class="flex items-center gap-1.5"><span class="h-2.5 w-5 rounded-sm bg-amber-400/15"></span>Tolérance</span>
               <span class="flex items-center gap-1.5"><span class="h-0.5 w-5 bg-sky-400"></span>MAP mesurée</span>
+              <span class="flex items-center gap-1.5"><span class="h-0.5 w-5 border-t-2 border-dashed border-violet-400"></span>Consigne calculateur</span>
               <span class="flex items-center gap-1.5"><span class="h-0.5 w-5 border-t border-dotted border-zinc-400"></span>Pression atmosphérique</span>
             </div>
           </div>
@@ -318,6 +331,7 @@
             <p class="font-semibold text-zinc-300">Modes OBD utilisés</p>
             <ul class="mt-1 space-y-0.5 font-mono">
               <li>01 01 · état MIL + nombre de codes</li>
+              <li>02 · données figées au moment du défaut</li>
               <li>03 · codes confirmés (mémorisés)</li>
               <li>07 · codes en attente (cycle en cours)</li>
               <li>04 · effacement codes + données figées</li>
@@ -338,6 +352,14 @@
               <span id="dtc-pending-count" class="chip border-zinc-700 text-zinc-400">—</span>
             </div>
             <ul id="dtc-pending" class="mt-3 space-y-2"></ul>
+          </div>
+          <div class="card">
+            <div class="flex items-center justify-between gap-2">
+              <h2 class="card-title"><i data-lucide="camera" class="h-4 w-4 text-sky-400"></i>Données figées <span class="font-mono text-zinc-600">(mode 02)</span></h2>
+              <span id="ff-code" class="chip border-zinc-700 text-zinc-400">—</span>
+            </div>
+            <p class="mt-1 text-xs text-zinc-500">État du moteur enregistré par le calculateur au moment où le défaut a été mémorisé : régime, charge, pressions… Précieux pour comprendre dans quelles conditions la panne survient.</p>
+            <div id="freeze-frame" class="mt-3"></div>
           </div>
         </div>
       </div>
@@ -444,6 +466,12 @@ function interp(curve, x) {
   return curve[curve.length - 1][1];
 }
 
+/** Débit d'air théorique (g/s) d'un moteur 4 temps : densité de l'air (MAP, T) × cylindrée × régime / 2 × rendement volumétrique. */
+function theoreticalAirflow(mapKpa, rpm, tempC, dispL, ve = 0.9) {
+  const rho = (mapKpa * 1000) / (287.05 * (tempC + 273.15)); // kg/m³
+  return rho * (dispL / 1000) * (rpm / 120) * ve * 1000;     // g/s
+}
+
 /* =====================================================================
  * Console intégrée
  * ===================================================================== */
@@ -513,38 +541,38 @@ const PRESET_PROFILES = [
   {
     id: 'nissan-xtrail-t32-r9m', preset: true,
     name: 'Nissan X-Trail T32 — 1.6 dCi 130 (R9M)',
-    make: 'Nissan', model: 'X-Trail (T32)', engine: '1.6 dCi R9M — 130 ch / 320 Nm', years: '2014 – 2017',
-    fuel: 'diesel', aspiration: 'turbo', redline: 4500,
+    make: 'Nissan', model: 'X-Trail (T32)', engine: '1.6 dCi R9M — 130 ch / 320 Nm', years: '2014 – 2019 (≈)',
+    fuel: 'diesel', aspiration: 'turbo', redline: 4500, displacement: 1.598,
     idle: { min: 750, max: 900, stability: 35 },
     coolant: { warmMin: 80, normalMax: 103, alarm: 110 },
     map: {
-      idleRef: 'baro', idleMin: -8, idleMax: 15, loadThreshold: 70, max: 250, collapseDrop: 25,
+      idleRef: 'baro', idleMin: -8, idleMax: 15, loadThreshold: 70, max: 285, collapseDrop: 25,
       curve: [[1250, 125], [1500, 160], [1750, 200], [2000, 220], [2500, 235], [3000, 235], [3500, 225], [4000, 210]],
     },
-    notes: "Turbo à géométrie variable, FAP, EGR. Couple maxi dès 1 750 tr/min : en pleine charge, la pression doit monter franchement entre 1 500 et 2 000 tr/min. Le PID standard 010B plafonne à 255 kPa.",
+    notes: "Turbo à géométrie variable, FAP, EGR. 130 ch à 4 000 tr/min, 320 Nm dès 1 750 tr/min. Ralenti, températures et courbe MAP sont ESTIMÉS (aucune donnée constructeur publique) ; seule valeur publiée trouvée : suralimentation de 2,7 bar annoncée au lancement (2011), sans précision absolue/relative. Si le calculateur transmet sa consigne de suralimentation (PID 0170), l'analyse s'appuie sur elle plutôt que sur cette courbe. Le PID standard 010B plafonne à 255 kPa.",
   },
   {
     id: 'nissan-qashqai-j11-k9k', preset: true,
     name: 'Nissan Qashqai J11 — 1.5 dCi 110 (K9K)',
     make: 'Nissan', model: 'Qashqai (J11)', engine: '1.5 dCi K9K — 110 ch / 260 Nm', years: '2014 – 2018',
-    fuel: 'diesel', aspiration: 'turbo', redline: 4500,
+    fuel: 'diesel', aspiration: 'turbo', redline: 4500, displacement: 1.461,
     idle: { min: 770, max: 880, stability: 35 },
     coolant: { warmMin: 80, normalMax: 103, alarm: 110 },
     map: {
-      idleRef: 'baro', idleMin: -8, idleMax: 15, loadThreshold: 70, max: 240, collapseDrop: 25,
+      idleRef: 'baro', idleMin: -8, idleMax: 15, loadThreshold: 70, max: 270, collapseDrop: 25,
       curve: [[1250, 120], [1500, 150], [1750, 185], [2000, 205], [2500, 215], [3000, 215], [3500, 205], [4000, 195]],
     },
-    notes: 'Turbo à géométrie variable, FAP. Profil générique dérivé des valeurs usuelles du K9K.',
+    notes: 'Turbo à géométrie variable, FAP. Seuils estimés (valeurs usuelles d\'un diesel turbo de cette taille), non issus de données constructeur.',
   },
   {
     id: 'generic-diesel-turbo', preset: true,
     name: 'Générique — Diesel turbo',
     make: 'Générique', model: 'Diesel turbo', engine: 'Diesel turbocompressé (common rail)', years: '',
-    fuel: 'diesel', aspiration: 'turbo', redline: 4500,
+    fuel: 'diesel', aspiration: 'turbo', redline: 4500, displacement: 1.6,
     idle: { min: 720, max: 950, stability: 40 },
     coolant: { warmMin: 78, normalMax: 105, alarm: 112 },
     map: {
-      idleRef: 'baro', idleMin: -8, idleMax: 15, loadThreshold: 70, max: 250, collapseDrop: 25,
+      idleRef: 'baro', idleMin: -8, idleMax: 15, loadThreshold: 70, max: 280, collapseDrop: 25,
       curve: [[1250, 120], [1500, 145], [2000, 190], [2500, 210], [3000, 210], [4000, 190]],
     },
     notes: 'Seuils larges, adaptés à la plupart des diesels turbo modernes.',
@@ -553,7 +581,7 @@ const PRESET_PROFILES = [
     id: 'generic-petrol-turbo', preset: true,
     name: 'Générique — Essence turbo',
     make: 'Générique', model: 'Essence turbo', engine: 'Essence turbocompressé (injection directe)', years: '',
-    fuel: 'essence', aspiration: 'turbo', redline: 6200,
+    fuel: 'essence', aspiration: 'turbo', redline: 6200, displacement: 1.4,
     idle: { min: 620, max: 850, stability: 30 },
     coolant: { warmMin: 80, normalMax: 105, alarm: 112 },
     map: {
@@ -566,7 +594,7 @@ const PRESET_PROFILES = [
     id: 'generic-petrol-na', preset: true,
     name: 'Générique — Essence atmosphérique',
     make: 'Générique', model: 'Essence atmo', engine: 'Essence atmosphérique', years: '',
-    fuel: 'essence', aspiration: 'atmo', redline: 6500,
+    fuel: 'essence', aspiration: 'atmo', redline: 6500, displacement: 1.6,
     idle: { min: 620, max: 850, stability: 30 },
     coolant: { warmMin: 80, normalMax: 105, alarm: 112 },
     map: { idleRef: 'abs', idleMin: 22, idleMax: 45, loadThreshold: 80, max: 110, collapseDrop: 25, curve: [] },
@@ -855,15 +883,25 @@ class BleTransport {
  * Simulateur ELM327 (mode démo) — CAN 11 bits 500 kbit/s
  * ===================================================================== */
 class SimTransport {
-  constructor({ leak = false } = {}) {
+  constructor({ fault = 'none' } = {}) {
     this.kind = 'sim';
-    this.leak = leak;
+    this.fault = fault;
     this.onData = null; this.onDisconnect = null;
     this.connected = false;
     this.stored = ['0299', '2463', '0401'];
     this.pending = ['0101'];
-    this.s = { rpm: 0, map: 100, ect: 38, speed: 0, load: 0 };
     this.baro = 100;
+    this.s = {
+      rpm: 0, map: 100, ect: 38, speed: 0, load: 0, iat: 24, cact: 24, pedal: 0, fuelRate: 0,
+      boostCmd: 100, railCmd: 280, rail: 280, vgtCmd: 25, vgt: 25, egrCmd: 38, egrAct: 38, maf: 0,
+      dpfDp: 0.4, dpfTin: 180, dpfTout: 170, dpfLoad: 62, regen: false, regenAvgMin: 35, regenAvgKm: 420,
+    };
+    // Données figées au moment de la mémorisation du défaut P0299
+    this.frozen = {
+      rpm: 2150, map: 142, ect: 86, speed: 64, load: 94, iat: 24, cact: 41, pedal: 100, fuelRate: 12.4,
+      boostCmd: 226, railCmd: 1550, rail: 1540, vgtCmd: 85, vgt: 84, egrCmd: 0, egrAct: 1, maf: 61,
+      dpfDp: 6, dpfTin: 390, dpfTout: 370, dpfLoad: 62, regen: false, regenAvgMin: 35, regenAvgKm: 420,
+    };
     this._resetFlags();
   }
   _resetFlags() { this.echo = true; this.spaces = true; this.headers = false; this.searched = false; }
@@ -897,30 +935,67 @@ class SimTransport {
     const now = performance.now();
     const dt = Math.min(0.5, (now - this.last) / 1000);
     this.last = now;
+    const k = (tau) => 1 - Math.exp(-dt / tau);
     const elapsed = (now - this.t0) / 1000;
     const t = elapsed % 42;
-    const s = this.s;
+    const s = this.s, f = this.fault, baro = this.baro;
+
+    // Scénario : ralenti → démarrage → pleine charge en 3e → croisière → décélération → ralenti
     let rpmT, loadT, spdT;
     if (t < 8) { rpmT = 805 + Math.sin(now / 280) * 10; loadT = 18; spdT = 0; }
     else if (t < 11) { rpmT = 1350; loadT = 45; spdT = 22; }
-    else if (t < 17) { const k = (t - 11) / 6; rpmT = 1400 + k * 2300; loadT = 96; spdT = 25 + k * 45; }
+    else if (t < 17) { const x = (t - 11) / 6; rpmT = 1400 + x * 2300; loadT = 96; spdT = 25 + x * 45; }
     else if (t < 27) { rpmT = 2000; loadT = 35; spdT = 70; }
-    else if (t < 33) { const k = (t - 27) / 6; rpmT = 2000 - k * 1150; loadT = 4; spdT = 70 * (1 - k); }
+    else if (t < 33) { const x = (t - 27) / 6; rpmT = 2000 - x * 1150; loadT = 4; spdT = 70 * (1 - x); }
     else { rpmT = 805 + Math.sin(now / 280) * 10; loadT = 18; spdT = 0; }
+    s.rpm += (rpmT - s.rpm) * k(0.35);
+    s.load += (loadT - s.load) * k(0.2);
+    s.speed += (spdT - s.speed) * k(0.8);
+    s.pedal = clamp(s.load * 1.03, 0, 100);
+    s.fuelRate = 0.7 + s.load * 0.13;
 
-    s.rpm += (rpmT - s.rpm) * (1 - Math.exp(-dt / 0.35));
-    s.load += (loadT - s.load) * (1 - Math.exp(-dt / 0.2));
-    s.speed += (spdT - s.speed) * (1 - Math.exp(-dt / 0.8));
-
+    // Consigne de suralimentation calculée par le « calculateur »
     const healthy = [[800, 103], [1250, 130], [1500, 168], [1750, 208], [2000, 228], [2500, 240], [3000, 240], [3500, 232], [4000, 215]];
-    let target = this.baro + 3;
-    if (s.load > 60) target = interp(healthy, s.rpm);
-    else if (s.load > 25) target = this.baro + (s.load - 25) * 1.2;
-    if (this.leak && target > this.baro) {
-      target = this.baro + (target - this.baro) * 0.5;
-      if (s.load > 60 && s.rpm > 2050 && s.rpm < 2600) target = this.baro + 12; // effondrement brutal
+    let cmd = baro + 3;
+    if (s.load > 60) cmd = interp(healthy, s.rpm);
+    else if (s.load > 25) cmd = baro + (s.load - 25) * 1.2;
+    if (f === 'limp') cmd = Math.min(cmd, baro + 30);
+    s.boostCmd = cmd;
+
+    // Actionneurs : géométrie variable et EGR (consigne puis position réelle)
+    s.vgtCmd = s.load > 60 ? 85 : s.load > 25 ? 55 : 25;
+    s.vgt += ((f === 'vgt' ? 28 : s.vgtCmd) - s.vgt) * k(0.15);
+    s.egrCmd = s.load > 60 ? 0 : s.load > 25 ? 20 : 38;
+    s.egrAct += ((f === 'egr' ? 45 : s.egrCmd) - s.egrAct) * k(0.2);
+
+    // Pression réellement obtenue
+    let target = cmd;
+    if (cmd > baro) {
+      if (f === 'leak') {
+        target = baro + (cmd - baro) * 0.5;
+        if (s.load > 60 && s.rpm > 2050 && s.rpm < 2600) target = baro + 12; // effondrement brutal
+      } else if (f === 'vgt') target = baro + (cmd - baro) * 0.45;
+      else if (f === 'egr' && s.load > 60) target = baro + (cmd - baro) * 0.6;
     }
-    s.map += (target - s.map) * (1 - Math.exp(-dt / 0.35));
+    s.map += (target - s.map) * k(0.35);
+
+    // Pression de rampe
+    s.railCmd = 280 + s.load * 13.5;
+    const railT = f === 'rail' && s.railCmd > 600 ? s.railCmd * 0.72 : s.railCmd;
+    s.rail += (railT - s.rail) * k(0.1);
+
+    // Débit d'air mesuré : réduit par l'EGR ; en cas de fuite après turbo, le débitmètre voit l'air qui s'échappe
+    s.cact = 24 + s.load * 0.2;
+    s.maf = f === 'leak' && s.load > 60
+      ? theoreticalAirflow(cmd, s.rpm, s.cact, 1.598) * 1.05
+      : theoreticalAirflow(s.map, s.rpm, s.cact, 1.598) * (1 - s.egrAct / 100);
+    s.maf *= 1 + (Math.random() - 0.5) * 0.03;
+
+    // FAP
+    s.dpfDp = 0.4 + (s.maf / 100) * 12;
+    s.dpfTin += (180 + s.load * 2.8 - s.dpfTin) * k(4);
+    s.dpfTout += (s.dpfTin - 15 - s.dpfTout) * k(6);
+
     s.ect = 88 - (88 - 38) * Math.exp(-elapsed / 60);
   }
 
@@ -963,33 +1038,70 @@ class SimTransport {
     return codes.flatMap((c) => [parseInt(c.slice(0, 2), 16), parseInt(c.slice(2, 4), 16)]);
   }
 
+  /** Octets de données d'un PID pour un état moteur donné (mode 01 ou 02). */
+  _pidData(pid, st) {
+    const w16 = (v) => { const n = Math.round(v) & 0xffff; return [n >> 8, n & 0xff]; };
+    const pct = (v) => Math.round(clamp(v, 0, 100) * 2.55);
+    const egrErr = st.egrCmd > 1 ? clamp(((st.egrAct - st.egrCmd) / st.egrCmd) * 100, -100, 99) : 0;
+    switch (pid) {
+      case 0x01: return [(this.stored.length ? 0x80 : 0) | this.stored.length, 0x07, 0x65, 0x00];
+      case 0x04: return [pct(st.load)];
+      case 0x05: return [Math.round(st.ect + 40)];
+      case 0x0B: return [Math.round(clamp(st.map + (Math.random() - 0.5) * 2, 0, 255))];
+      case 0x0C: return w16(Math.max(0, st.rpm + (Math.random() - 0.5) * 8) * 4);
+      case 0x0D: return [Math.round(st.speed)];
+      case 0x0F: return [Math.round(st.iat + 40)];
+      case 0x10: return w16(st.maf * 100);
+      case 0x1C: return [0x06];
+      case 0x1F: return w16((performance.now() - this.t0) / 1000);
+      case 0x21: return [0x00, 0x2A];
+      case 0x23: return w16(st.rail * 10);
+      case 0x2C: return [pct(st.egrCmd)];
+      case 0x2D: return [Math.round((egrErr + 100) * 1.28)];
+      case 0x33: return [this.baro];
+      case 0x49: return [pct(st.pedal)];
+      case 0x5E: return w16(st.fuelRate * 20);
+      case 0x69: return [0x07, pct(st.egrCmd), pct(st.egrAct), Math.round((egrErr + 100) * 1.28), 0, 0, 0];
+      case 0x6D: return [0x03, ...w16(st.railCmd * 10), ...w16(st.rail * 10), 0x41, 0, 0, 0, 0, 0];
+      case 0x70: return [0x03, ...w16(st.boostCmd * 32), ...w16(st.map * 32), 0, 0, 0, 0, 0x0A];
+      case 0x71: return [0x03, pct(st.vgtCmd), pct(st.vgt), 0, 0, 0];
+      case 0x77: return [0x01, Math.round(st.cact + 40), 0, 0, 0];
+      case 0x7A: return [0x07, ...w16(st.dpfDp * 100), ...w16((this.baro + st.dpfDp) * 100), ...w16(this.baro * 100)];
+      case 0x7C: return [0x03, ...w16((st.dpfTin + 40) * 10), ...w16((st.dpfTout + 40) * 10), 0, 0, 0, 0];
+      case 0x87: return [0x01, ...w16(st.map * 32), 0, 0];
+      case 0x8B: return [0x71, st.regen ? 1 : 0, pct(st.dpfLoad), ...w16(st.regenAvgMin), ...w16(st.regenAvgKm)];
+      default: return null;
+    }
+  }
+
   _obd(cmd) {
     const mode = cmd.slice(0, 2);
-    const s = this.s;
     const ecm = [];   // réponses du calculateur moteur (7E8)
     const tcm = [];   // réponses du calculateur de boîte (7E9)
     if (mode === '01') {
       const pid = parseInt(cmd.slice(2, 4), 16);
-      const r = (data) => [0x41, pid, ...data];
-      switch (pid) {
-        case 0x00:
-          ecm.push(r(this._mask(0x00, [0x01, 0x04, 0x05, 0x0B, 0x0C, 0x0D, 0x0F, 0x1C, 0x1F, 0x20])));
-          tcm.push(r(this._mask(0x00, [0x01, 0x0D])));
-          break;
-        case 0x20: ecm.push(r(this._mask(0x20, [0x21, 0x33]))); break;
-        case 0x01: ecm.push(r([(this.stored.length ? 0x80 : 0) | this.stored.length, 0x07, 0x65, 0x00])); break;
-        case 0x04: ecm.push(r([Math.round(clamp(s.load, 0, 100) * 2.55)])); break;
-        case 0x05: ecm.push(r([Math.round(s.ect + 40)])); break;
-        case 0x0B: ecm.push(r([Math.round(clamp(s.map + (Math.random() - 0.5) * 2, 0, 255))])); break;
-        case 0x0C: { const v = Math.round(Math.max(0, s.rpm + (Math.random() - 0.5) * 8) * 4); ecm.push(r([v >> 8, v & 0xff])); break; }
-        case 0x0D: { const v = Math.round(s.speed); ecm.push(r([v])); tcm.push(r([v])); break; }
-        case 0x0F: ecm.push(r([25 + 40])); break;
-        case 0x1C: ecm.push(r([0x06])); break;
-        case 0x1F: { const v = Math.round((performance.now() - this.t0) / 1000); ecm.push(r([v >> 8, v & 0xff])); break; }
-        case 0x21: ecm.push(r([0x00, 0x2A])); break;
-        case 0x33: ecm.push(r([this.baro])); break;
-        default: return null;
+      const masks = {
+        0x00: [0x01, 0x04, 0x05, 0x0B, 0x0C, 0x0D, 0x0F, 0x10, 0x1C, 0x1F, 0x20],
+        0x20: [0x21, 0x23, 0x2C, 0x2D, 0x33, 0x40],
+        0x40: [0x49, 0x5E, 0x60],
+        0x60: [0x69, 0x6D, 0x70, 0x71, 0x77, 0x7A, 0x7C, 0x80],
+        0x80: [0x87, 0x8B],
+      };
+      if (masks[pid]) {
+        ecm.push([0x41, pid, ...this._mask(pid, masks[pid])]);
+        if (pid === 0x00) tcm.push([0x41, pid, ...this._mask(0, [0x01, 0x0D])]);
+      } else {
+        const data = this._pidData(pid, this.s);
+        if (!data) return null;
+        ecm.push([0x41, pid, ...data]);
+        if (pid === 0x0D) tcm.push([0x41, pid, ...data]);
       }
+    } else if (mode === '02') {
+      const pid = parseInt(cmd.slice(2, 4), 16);
+      if (!this.stored.length) return null;
+      const data = pid === 0x02 ? this._dtcBytes(this.stored.slice(0, 1)) : this._pidData(pid, this.frozen);
+      if (!data) return null;
+      ecm.push([0x42, pid, 0x00, ...data]);
     } else if (mode === '03') {
       ecm.push([0x43, this.stored.length, ...this._dtcBytes(this.stored)]);
     } else if (mode === '07') {
@@ -1000,7 +1112,7 @@ class SimTransport {
     } else return null;
 
     let responses = [...ecm.map((p) => ['7E8', p]), ...tcm.map((p) => ['7E9', p])];
-    const fastCount = cmd.length % 2 === 1 ? parseInt(cmd.slice(-1), 16) : 0;
+    const fastCount = mode === '01' && cmd.length % 2 === 1 ? parseInt(cmd.slice(-1), 16) : 0;
     if (fastCount) responses = responses.slice(0, fastCount);
     return responses.flatMap(([h, p]) => this._frames(h, p));
   }
@@ -1230,9 +1342,11 @@ class ELM327 {
     await this.readProtocol();
     this.supported = new Set();
     this._addSupport(lines, 0x00);
-    if (this.supported.has(0x20)) {
-      try { this._addSupport(await this.send('0120', { timeout: 4000 }), 0x20); }
-      catch (e) { Log.add('warn', `0120 : ${e.message}`); }
+    // Chaque plage annonce si la suivante existe (PID 20, 40, 60…) : on les parcourt toutes.
+    for (let base = 0x20; base <= 0xC0 && this.supported.has(base); base += 0x20) {
+      progress(`Recensement des PIDs supportés (01${hex2(base)})…`);
+      try { this._addSupport(await this.send(`01${hex2(base)}`, { timeout: 4000 }), base); }
+      catch (e) { Log.add('warn', `01${hex2(base)} : ${e.message}`); break; }
     }
     this.vehicleOk = true;
     Log.add('ok', `Protocole : ${this.protocolDesc || this.protocol} — ${this.supported.size} PIDs mode 01 supportés`);
@@ -1251,7 +1365,8 @@ class ELM327 {
   /** Lit un PID du mode 01 et renvoie les octets de données (A, B, …). */
   async readPid(pid, { live = false } = {}) {
     const hx = hex2(pid);
-    const fast = this.fast && this.isCan;
+    // Pas de requête rapide pour les réponses multi-trames (> 5 octets) : l'adaptateur pourrait couper après la 1re trame.
+    const fast = this.fast && this.isCan && !(PID_DEFS[pid]?.len > 5);
     let lines;
     try {
       lines = await this.send(`01${hx}${fast ? '1' : ''}`, { live, timeout: 2000 });
@@ -1267,6 +1382,38 @@ class ELM327 {
     const m = pickEcm(msgs.filter((x) => x.data[0] === 0x41 && x.data[1] === pid));
     if (!m) throw new ElmError('BAD_RESPONSE', `Réponse illisible pour 01${hx} : ${lines.join(' ')}`);
     return m.data.slice(2);
+  }
+
+  /**
+   * Mode 02 : données figées (trame 0). Renvoie { dtc, values } ou null si aucune trame enregistrée.
+   * Le PID 02 indique le code défaut qui a déclenché l'enregistrement.
+   */
+  async readFreezeFrame(pids) {
+    const query = async (pid) => {
+      const lines = await this.send(`02${hex2(pid)}00`, { timeout: 3000 });
+      const m = pickEcm(parseResponse(lines, this.protocol).filter((x) => x.data[0] === 0x42 && x.data[1] === pid));
+      if (!m) throw new ElmError('BAD_RESPONSE', `Réponse illisible pour 02${hex2(pid)}00 : ${lines.join(' ')}`);
+      return m.data.slice(3); // [42, PID, n° de trame, données…]
+    };
+    let dtc = null;
+    try {
+      const d = await query(0x02);
+      if (d[0] || d[1]) dtc = decodeDtc(d[0], d[1]);
+    } catch (e) {
+      if (e.code === 'NO_DATA') return null;
+      throw e;
+    }
+    if (!dtc) return null;
+    const values = {};
+    for (const pid of pids) {
+      try {
+        const d = await query(pid);
+        if (d.length >= PID_DEFS[pid].len) Object.assign(values, PID_DEFS[pid].decode(d));
+      } catch (e) {
+        if (e.code !== 'NO_DATA' && e.code !== 'BAD_RESPONSE') throw e;
+      }
+    }
+    return { dtc, values };
   }
 
   async readVoltage() {
@@ -1320,6 +1467,11 @@ const RULES = [
   { id: 'boost', title: 'Suralimentation en charge', icon: 'trending-up' },
   { id: 'collapse', title: 'Stabilité de la pression MAP', icon: 'trending-down' },
   { id: 'overboost', title: 'Surpression turbo', icon: 'octagon-alert' },
+  { id: 'rail', title: 'Pression de rampe (injection)', icon: 'fuel' },
+  { id: 'vgt', title: 'Géométrie variable du turbo', icon: 'fan' },
+  { id: 'egr', title: 'Vanne EGR', icon: 'recycle' },
+  { id: 'maf', title: 'Débit d\'air (débitmètre)', icon: 'air-vent' },
+  { id: 'dpf', title: 'Filtre à particules (FAP)', icon: 'filter' },
   { id: 'coolant', title: 'Température moteur', icon: 'thermometer' },
 ];
 const RANK = { alert: 4, warn: 3, info: 1, ok: 1, wait: 0, na: 0 };
@@ -1431,19 +1583,39 @@ class Analyzer {
 
     /* ---- 3. Suralimentation en charge ---- */
     if (!turbo) R.boost = { status: 'na', value: '—', message: 'Non applicable (moteur atmosphérique).' };
-    else if (highLoad && loadHeld >= 1.2 && s.map != null && p.map.curve.length && s.rpm >= Math.max(1500, p.map.curve[0][0]) && s.rpm <= p.redline) {
-      const w = this._win(0.8).filter((x) => x.map != null);
+    else if (highLoad && loadHeld >= 1.2 && s.map != null && s.rpm >= 1500 && s.rpm <= p.redline && (s.boostCmd != null || p.map.curve.length)) {
+      const w = this._win(1).filter((x) => x.map != null);
       const m = mean(w.map((x) => x.map)), r = mean(w.map((x) => x.rpm));
-      const exp = interp(p.map.curve, r);
-      const ratio = (m - baro) / Math.max(1, exp - baro);
-      const value = `${fmtNum(m)} kPa · attendu ≈ ${fmtNum(exp)} à ${fmtNum(r)} tr/min (${fmtNum(ratio * 100)} %)`;
-      if (m - baro < 25 && r >= 1800) R.boost = { status: 'alert', value, message: 'La pression MAP stagne : le turbo ne charge pas.',
-        hint: 'Géométrie variable grippée / actionneur de turbo, électrovanne de régulation, durite d\'air percée ou déboîtée, EGR bloquée ouverte, turbo défectueux.' };
-      else if (ratio < 0.65) R.boost = { status: 'alert', value, message: `Sous-pression importante : ${fmtNum(ratio * 100)} % de la suralimentation attendue.`,
-        hint: 'Fuite d\'air (durites, échangeur / intercooler, colliers), géométrie variable encrassée, électrovanne de régulation, capteur MAP, FAP colmaté (P0299).' };
-      else if (ratio < 0.82) R.boost = { status: 'warn', value, message: 'Légère sous-pression en charge.',
-        hint: 'Début de fuite d\'air, géométrie variable encrassée, filtre à air. Refaire le test moteur bien chaud.' };
-      else R.boost = { status: 'ok', value, message: 'Pression de suralimentation conforme à la courbe du profil.' };
+      const exp = p.map.curve.length ? interp(p.map.curve, r) : null;
+      const cmdW = w.filter((x) => x.boostCmd != null);
+      if (cmdW.length) {
+        // Référence fiable : la consigne calculée par le calculateur lui-même.
+        const cmd = mean(cmdW.map((x) => x.boostCmd));
+        const act = mean(cmdW.map((x) => x.boost ?? x.map));
+        // Le turbo a toujours un temps de réponse : on ne retient un écart que s'il persiste sur toute la fenêtre de 1,5 s.
+        const gaps = this._win(1.5).filter((x) => x.boostCmd != null && x.map != null).map((x) => (x.boost ?? x.map) - x.boostCmd);
+        const under = Math.max(...gaps), over = Math.min(...gaps);
+        const value = `réel ${fmtNum(act)} kPa · consigne ${fmtNum(cmd)} kPa à ${fmtNum(r)} tr/min`;
+        if (under < -30) R.boost = { status: 'alert', value, message: `Pression réelle inférieure d'au moins ${fmtNum(-under)} kPa à la consigne du calculateur.`,
+          hint: 'Fuite d\'air après le turbo (durites, échangeur, colliers), géométrie variable grippée ou actionneur défaillant, turbo usé. C\'est la situation qui déclenche le code P0299 et le mode dégradé.' };
+        else if (under < -15) R.boost = { status: 'warn', value, message: `Pression durablement sous la consigne (au moins ${fmtNum(-under)} kPa).`,
+          hint: 'Début de fuite d\'air, géométrie variable encrassée. Refaire la mesure moteur chaud, en pleine charge prolongée.' };
+        else if (over > 25) R.boost = { status: 'alert', value, message: `Pression réelle supérieure d'au moins ${fmtNum(over)} kPa à la consigne (surpression).`,
+          hint: 'Géométrie variable bloquée en position fermée, actionneur ou électrovanne de régulation, capteur de pression de suralimentation.' };
+        else if (exp && cmd - baro < 0.5 * (exp - baro)) R.boost = { status: 'warn', value, message: 'Le turbo suit sa consigne, mais la consigne est anormalement basse : le calculateur limite la puissance.',
+          hint: 'Mode dégradé suite à un défaut (voir codes et données figées), protection thermique, régénération du FAP, défaut d\'un autre capteur (débitmètre, pression de rampe). À relativiser : la courbe de référence du profil est une estimation.' };
+        else R.boost = { status: 'ok', value, message: 'Pression de suralimentation conforme à la consigne du calculateur.' };
+      } else {
+        const ratio = (m - baro) / Math.max(1, exp - baro);
+        const value = `${fmtNum(m)} kPa · attendu ≈ ${fmtNum(exp)} à ${fmtNum(r)} tr/min (${fmtNum(ratio * 100)} %)`;
+        if (m - baro < 25 && r >= 1800) R.boost = { status: 'alert', value, message: 'La pression MAP stagne : le turbo ne charge pas.',
+          hint: 'Géométrie variable grippée / actionneur de turbo, électrovanne de régulation, durite d\'air percée ou déboîtée, EGR bloquée ouverte, turbo défectueux.' };
+        else if (ratio < 0.65) R.boost = { status: 'alert', value, message: `Sous-pression importante : ${fmtNum(ratio * 100)} % de la suralimentation attendue.`,
+          hint: 'Fuite d\'air (durites, échangeur / intercooler, colliers), géométrie variable encrassée, électrovanne de régulation, capteur MAP, FAP colmaté (P0299).' };
+        else if (ratio < 0.82) R.boost = { status: 'warn', value, message: 'Légère sous-pression en charge.',
+          hint: 'Début de fuite d\'air, géométrie variable encrassée, filtre à air. Refaire le test moteur bien chaud.' };
+        else R.boost = { status: 'ok', value, message: 'Pression conforme à la courbe du profil (courbe estimée : consigne calculateur non transmise).' };
+      }
     }
 
     /* ---- 4. Chute brutale de pression ---- */
@@ -1464,11 +1636,111 @@ class Analyzer {
     if (!turbo) R.overboost = { status: 'na', value: '—', message: 'Non applicable (moteur atmosphérique).' };
     else if (running && s.map != null) {
       const w = this._win(1).filter((x) => x.map != null);
+      const saturated = state.mapSource === 0x0B && s.map >= 254;
       const over = w.length >= 2 && w.every((x) => x.map > p.map.max);
-      R.overboost = over
+      if (saturated) R.overboost = { status: 'info', value: '≥ 255 kPa', message: 'Pression au plafond du PID standard 010B (255 kPa) : une surpression ne peut pas être mesurée avec ce PID. Ce n\'est pas une anomalie en soi.' };
+      else R.overboost = over
         ? { status: 'alert', value: `${fmtNum(s.map)} kPa (max ${p.map.max})`, message: 'Surpression de suralimentation (overboost).',
-            hint: 'Géométrie variable bloquée en position fermée, actionneur / électrovanne de régulation, capteur MAP. Rappel : le PID 010B plafonne à 255 kPa.' }
-        : { status: 'ok', value: `Max observé ${fmtNum(this.maxMap)} kPa`, message: `Pression sous le seuil de ${p.map.max} kPa.` };
+            hint: 'Géométrie variable bloquée en position fermée, actionneur / électrovanne de régulation, capteur MAP.' }
+        : { status: 'ok', value: `Max observé ${fmtNum(this.maxMap)} kPa`, message: `Pression sous le seuil de ${p.map.max} kPa (seuil estimé).` };
+    }
+
+    /* ---- 7. Pression de rampe ---- */
+    if (s.rail == null && s.railCmd == null) R.rail = { status: 'na', value: '—', message: 'Non transmise par le calculateur.' };
+    else if (running) {
+      const w = this._win(1.5).filter((x) => x.rail != null && x.railCmd != null);
+      if (w.length >= 2) {
+        const cmd = mean(w.map((x) => x.railCmd)), act = mean(w.map((x) => x.rail));
+        const dev = (act - cmd) / Math.max(1, cmd);
+        const value = `réel ${fmtNum(act)} bar · consigne ${fmtNum(cmd)} bar (${dev >= 0 ? '+' : ''}${fmtNum(dev * 100)} %)`;
+        const fuelHint = diesel
+          ? 'Filtre à gazole colmaté, prise d\'air sur le circuit gazole, pompe haute pression ou de gavage faible, régulateur de débit / de pression, fuite au retour des injecteurs (codes P0087, P0093).'
+          : 'Pompe haute pression, régulateur, filtre à essence, capteur de pression (P0087).';
+        if (dev < -0.15 && cmd > 400) R.rail = { status: 'alert', value, message: 'Pression de rampe nettement inférieure à la consigne : le moteur manque de carburant.', hint: fuelHint };
+        else if (dev < -0.08 && cmd > 400) R.rail = { status: 'warn', value, message: 'Pression de rampe un peu basse par rapport à la consigne.', hint: fuelHint };
+        else if (dev > 0.15 && cmd > 400) R.rail = { status: 'warn', value, message: 'Pression de rampe supérieure à la consigne.', hint: 'Régulateur de pression de rampe, capteur de pression de rampe (P0088, P0191).' };
+        else R.rail = { status: 'ok', value, message: 'Pression de rampe conforme à la consigne.' };
+      } else if (s.rail != null && s.railCmd == null) {
+        R.rail = { status: 'info', value: `${fmtNum(s.rail)} bar`, message: 'Pression mesurée seulement : la consigne n\'est pas transmise, comparaison impossible.' };
+      }
+    }
+
+    /* ---- 8. Géométrie variable ---- */
+    if (!turbo) R.vgt = { status: 'na', value: '—', message: 'Non applicable (moteur atmosphérique).' };
+    else if (s.vgt == null || s.vgtCmd == null) R.vgt = { status: 'na', value: '—', message: 'Position consigne / réelle non transmise par le calculateur.' };
+    else if (running) {
+      const w = this._win(2).filter((x) => x.vgt != null && x.vgtCmd != null);
+      if (w.length >= 2) {
+        const gap = mean(w.map((x) => Math.abs(x.vgt - x.vgtCmd)));
+        const value = `réel ${fmtNum(s.vgt)} % · consigne ${fmtNum(s.vgtCmd)} % (écart moyen ${fmtNum(gap)} pts)`;
+        const hint = 'Ailettes encrassées ou grippées (calamine), actionneur du turbo (électrique ou à dépression), électrovanne de commande, tringlerie.';
+        if (gap > 22) R.vgt = { status: 'alert', value, message: 'La géométrie variable ne suit pas sa consigne.', hint };
+        else if (gap > 12) R.vgt = { status: 'warn', value, message: 'Écart notable entre position demandée et position réelle de la géométrie variable.', hint };
+        else R.vgt = { status: 'ok', value, message: 'La géométrie variable suit sa consigne.' };
+      }
+    }
+
+    /* ---- 9. Vanne EGR ---- */
+    if (s.egrErr == null && (s.egrCmd == null || s.egrAct == null)) R.egr = { status: 'na', value: '—', message: 'Consigne / position EGR non transmises par le calculateur.' };
+    else if (running) {
+      const w = this._win(2.5);
+      const hint = 'Vanne EGR encrassée ou grippée (calamine), capteur de position, connectique. Une EGR qui reste ouverte fait chuter la puissance et la pression de turbo, et fait fumer noir.';
+      const pairs = w.filter((x) => x.egrCmd != null && x.egrAct != null);
+      if (highLoad && s.egrAct != null && s.egrAct > 15 && (s.egrCmd ?? 0) < 5) {
+        R.egr = { status: 'alert', value: `réel ${fmtNum(s.egrAct)} % · consigne ${fmtNum(s.egrCmd)} %`, message: 'Vanne EGR restée ouverte en pleine charge.', hint };
+      } else if (pairs.length >= 2) {
+        const gap = mean(pairs.map((x) => Math.abs(x.egrAct - x.egrCmd)));
+        const value = `réel ${fmtNum(s.egrAct)} % · consigne ${fmtNum(s.egrCmd)} % (écart moyen ${fmtNum(gap)} pts)`;
+        if (gap > 25) R.egr = { status: 'alert', value, message: 'La vanne EGR ne suit pas sa consigne.', hint };
+        else if (gap > 12) R.egr = { status: 'warn', value, message: 'La vanne EGR suit mal sa consigne.', hint };
+        else R.egr = { status: 'ok', value, message: 'La vanne EGR suit sa consigne.' };
+      } else {
+        const errs = w.filter((x) => x.egrErr != null && (x.egrCmd == null || x.egrCmd > 10));
+        if (errs.length >= 2) {
+          const err = mean(errs.map((x) => Math.abs(x.egrErr)));
+          const value = `erreur moyenne ${fmtNum(err)} %`;
+          if (err > 50) R.egr = { status: 'alert', value, message: 'Forte erreur de position EGR signalée par le calculateur.', hint };
+          else if (err > 25) R.egr = { status: 'warn', value, message: 'Erreur de position EGR notable.', hint };
+          else R.egr = { status: 'ok', value, message: 'Erreur EGR faible.' };
+        }
+      }
+    }
+
+    /* ---- 10. Débit d'air ---- */
+    if (s.maf == null) R.maf = { status: 'na', value: '—', message: 'Débitmètre non transmis par le calculateur.' };
+    else if (highLoad && loadHeld >= 1.5 && s.rpm >= 1800 && s.rpm <= 3800 && s.map != null) {
+      const w = this._win(1).filter((x) => x.maf != null && x.map != null);
+      const maf = mean(w.map((x) => x.maf)), m = mean(w.map((x) => x.map)), r = mean(w.map((x) => x.rpm));
+      // Température de l'air dans le collecteur : sonde après échangeur si dispo, sinon air d'admission + 20 °C (estimation).
+      const tC = s.cact ?? (s.iat != null ? s.iat + 20 : 45);
+      const theo = theoreticalAirflow(m, r, tC, p.displacement ?? 1.6);
+      const ratio = maf / theo;
+      const value = `${fmtNum(maf, 1)} g/s · théorique ≈ ${fmtNum(theo)} g/s (${fmtNum(ratio * 100)} %)`;
+      if (ratio < 0.6) R.maf = { status: 'warn', value, message: 'Débit d\'air mesuré faible pour la pression d\'admission.',
+        hint: 'Débitmètre encrassé ou défaillant (P0101), prise d\'air entre le débitmètre et le turbo, vanne EGR ouverte en charge. Estimation indicative (rendement volumétrique supposé à 90 %).' };
+      else if (ratio > 1.4) R.maf = { status: 'warn', value, message: 'Débit d\'air mesuré supérieur à l\'air réellement admis dans les cylindres.',
+        hint: 'Fuite d\'air après le turbo (durites, échangeur, colliers) : l\'air mesuré s\'échappe avant les cylindres. Ou débitmètre qui surestime.' };
+      else R.maf = { status: 'ok', value, message: 'Débit d\'air cohérent avec la pression d\'admission (estimation).' };
+    } else if (running && (this.results.maf.status === 'wait' || this.results.maf.status === 'na')) {
+      R.maf = { status: 'wait', value: `${fmtNum(s.maf, 1)} g/s`, message: 'Analyse en pleine charge, entre 1 800 et 3 800 tr/min.' };
+    }
+
+    /* ---- 11. Filtre à particules ---- */
+    const hasDpf = [s.regen, s.dpfLoad, s.dpfDp, s.dpfTin, s.regenAvgKm].some((v) => v != null);
+    if (!hasDpf) R.dpf = { status: 'na', value: '—', message: 'Données FAP non transmises par le calculateur : surveillez les codes P2002, P2463, P242F, P2452-P2455.' };
+    else {
+      const parts = [];
+      if (s.dpfLoad != null) parts.push(`seuil régé ${fmtNum(s.dpfLoad)} %`);
+      if (s.dpfDp != null) parts.push(`Δp ${fmtNum(s.dpfDp, 1)} kPa`);
+      if (s.dpfTin != null) parts.push(`${fmtNum(s.dpfTin)} °C`);
+      if (s.regenAvgKm != null) parts.push(`régé ≈ tous les ${fmtNum(s.regenAvgKm)} km`);
+      const value = parts.join(' · ') || '—';
+      if (s.regen) R.dpf = { status: 'info', value, message: 'Régénération du FAP en cours : ralenti plus haut et légère perte de puissance possibles. Laissez-la se terminer (15–20 min de route).' };
+      else if (s.dpfLoad != null && s.dpfLoad >= 100) R.dpf = { status: 'warn', value, message: 'Seuil de régénération atteint : le FAP doit se régénérer.',
+        hint: 'Rouler 20 min sur voie rapide au-dessus de 2 500 tr/min. Si la régénération ne démarre pas : capteur de pression différentielle, codes défauts FAP.' };
+      else if (s.regenAvgKm != null && s.regenAvgKm > 0 && s.regenAvgKm < 150) R.dpf = { status: 'warn', value, message: 'Régénérations très rapprochées.',
+        hint: 'Encrassement excessif : injecteurs, EGR, trajets courts répétés, FAP chargé en cendres (P242F).' };
+      else R.dpf = { status: 'ok', value, message: 'Pas de régénération en cours.' };
     }
 
     /* ---- 6. Température moteur ---- */
@@ -1552,7 +1824,7 @@ const AccelTest = {
       // Pied levé : charge retombée (ou, sans PID de charge, régime qui redescend).
       const released = s.load != null ? s.load < p.map.loadThreshold - 15 : s.rpm < peakRpm - 200;
       if (dur > 1 && released) { this.finish(p, baro); return; }
-      if (s.map != null) this.points.push({ rpm: s.rpm, map: s.map, t: s.t, load: s.load });
+      if (s.map != null) this.points.push({ rpm: s.rpm, map: s.map, t: s.t, load: s.load, cmd: s.boostCmd, rail: s.rail, railCmd: s.railCmd });
       if (s.rpm >= Math.min(3400, p.redline - 300) || dur > 15) this.finish(p, baro);
     }
   },
@@ -1563,8 +1835,6 @@ const AccelTest = {
     if (pts.length < 4) {
       res = { status: 'warn', title: 'Mesure insuffisante', lines: ['Trop peu de points en charge au-dessus de 1 500 tr/min. Recommencez en accélérant franchement et plus longtemps.'] };
     } else {
-      const ratios = pts.map((x) => (x.map - baro) / Math.max(1, interp(p.map.curve, x.rpm) - baro));
-      const meanRatio = mean(ratios);
       const near2000 = pts.filter((x) => Math.abs(x.rpm - 2000) <= 200);
       const mapAt2000 = near2000.length ? mean(near2000.map((x) => x.map)) : null;
       const maxMap = Math.max(...pts.map((x) => x.map));
@@ -1573,20 +1843,51 @@ const AccelTest = {
         peak = Math.max(peak, x.map);
         if (x.rpm >= 1500 && peak - x.map >= p.map.collapseDrop && !collapse) collapse = { rpm: x.rpm, drop: peak - x.map };
       }
-      const lines = [
-        `MAP maximale : <b>${fmtNum(maxMap)} kPa</b> (${fmtNum((maxMap - baro) / 100, 2)} bar relatifs)`,
-        mapAt2000 != null ? `MAP vers 2 000 tr/min : <b>${fmtNum(mapAt2000)} kPa</b> (attendu ≈ ${fmtNum(interp(p.map.curve, 2000))})` : 'Pas de mesure autour de 2 000 tr/min.',
-        `Suralimentation moyenne : <b>${fmtNum(meanRatio * 100)} %</b> de la courbe attendue`,
-      ];
+      const lines = [`MAP maximale : <b>${fmtNum(maxMap)} kPa</b> (${fmtNum((maxMap - baro) / 100, 2)} bar relatifs)`];
+      const findings = []; // { status, text } — le plus grave devient le titre
+
       if (collapse) {
         lines.push(`Chute de ${fmtNum(collapse.drop)} kPa vers ${fmtNum(collapse.rpm)} tr/min`);
-        res = { status: 'alert', title: 'Chute de pression MAP détectée - Vérifier fuite d\'air / durite / géométrie turbo', lines };
-      } else if (meanRatio < 0.65 || (mapAt2000 != null && mapAt2000 - baro < 25)) {
-        res = { status: 'alert', title: 'Sous-pression importante : fuite d\'air, géométrie variable grippée ou régulation turbo', lines };
-      } else if (meanRatio < 0.82) {
-        res = { status: 'warn', title: 'Légère sous-pression : à surveiller (fuite naissante, géométrie encrassée)', lines };
-      } else {
-        res = { status: 'ok', title: 'Montée en pression conforme au profil', lines };
+        findings.push({ status: 'alert', text: 'Chute de pression MAP détectée - Vérifier fuite d\'air / durite / géométrie turbo' });
+      }
+
+      // On ignore la 1re seconde et demie : temps de réponse normal du turbo.
+      const cmdPts = pts.filter((x) => x.cmd != null && x.t - this.startT >= 1500);
+      if (cmdPts.length >= 4) {
+        // Référence : consigne du calculateur
+        const gap = mean(cmdPts.map((x) => x.map - x.cmd));
+        const cmd2000 = cmdPts.filter((x) => Math.abs(x.rpm - 2000) <= 200);
+        lines.push(`Écart moyen réel − consigne calculateur : <b>${gap >= 0 ? '+' : ''}${fmtNum(gap)} kPa</b>`);
+        if (mapAt2000 != null && cmd2000.length) lines.push(`Vers 2 000 tr/min : <b>${fmtNum(mapAt2000)} kPa</b> pour une consigne de ${fmtNum(mean(cmd2000.map((x) => x.cmd)))} kPa`);
+        if (gap < -30) findings.push({ status: 'alert', text: 'Pression réelle très inférieure à la consigne : fuite d\'air après turbo, géométrie variable ou turbo' });
+        else if (gap < -15) findings.push({ status: 'warn', text: 'Pression un peu sous la consigne : fuite naissante ou géométrie encrassée' });
+        else if (gap > 25) findings.push({ status: 'alert', text: 'Pression supérieure à la consigne : géométrie variable bloquée fermée / régulation' });
+        if (p.map.curve.length) {
+          const cmdRatio = mean(cmdPts.map((x) => (x.cmd - baro) / Math.max(1, interp(p.map.curve, x.rpm) - baro)));
+          if (cmdRatio < 0.5) findings.push({ status: 'warn', text: 'Le turbo suit sa consigne mais celle-ci est bridée : mode dégradé probable (lire codes et données figées)' });
+        }
+      } else if (p.map.curve.length) {
+        // Repli : courbe estimée du profil
+        const meanRatio = mean(pts.map((x) => (x.map - baro) / Math.max(1, interp(p.map.curve, x.rpm) - baro)));
+        if (mapAt2000 != null) lines.push(`MAP vers 2 000 tr/min : <b>${fmtNum(mapAt2000)} kPa</b> (courbe estimée ≈ ${fmtNum(interp(p.map.curve, 2000))})`);
+        lines.push(`Suralimentation moyenne : <b>${fmtNum(meanRatio * 100)} %</b> de la courbe estimée`);
+        if (meanRatio < 0.65 || (mapAt2000 != null && mapAt2000 - baro < 25)) findings.push({ status: 'alert', text: 'Sous-pression importante : fuite d\'air, géométrie variable grippée ou régulation turbo' });
+        else if (meanRatio < 0.82) findings.push({ status: 'warn', text: 'Légère sous-pression : à surveiller (fuite naissante, géométrie encrassée)' });
+      }
+
+      const railPts = pts.filter((x) => x.rail != null && x.railCmd > 400);
+      if (railPts.length >= 3) {
+        const worst = Math.min(...railPts.map((x) => (x.rail - x.railCmd) / x.railCmd));
+        lines.push(`Pression de rampe : au pire <b>${fmtNum(worst * 100)} %</b> par rapport à la consigne`);
+        if (worst < -0.15) findings.push({ status: 'alert', text: 'Pression de rampe insuffisante en charge : alimentation gazole (filtre, pompe, régulateur)' });
+        else if (worst < -0.08) findings.push({ status: 'warn', text: 'Pression de rampe un peu basse en charge' });
+      }
+
+      findings.sort((a, b) => RANK[b.status] - RANK[a.status]);
+      if (!findings.length) res = { status: 'ok', title: cmdPts.length >= 4 ? 'Montée en pression conforme à la consigne du calculateur' : 'Montée en pression conforme à la courbe estimée du profil', lines };
+      else {
+        findings.slice(1).forEach((f) => lines.push(`⚠ ${esc(f.text)}`));
+        res = { status: findings[0].status, title: findings[0].text, lines };
       }
     }
     this.result = res;
@@ -1608,21 +1909,108 @@ const state = {
   live: false, livePromise: null, wakeLock: null,
   values: { rpm: null, map: null, ect: null, speed: null, load: null, volt: null, baro: null },
   baroSource: 'défaut',
+  mapSource: 0x0B,            // PID utilisé pour la MAP : 0187 (étendue), 0170 (suralimentation) ou 010B
   hist: {}, minmax: {},
-  noData: {}, disabledPids: new Set(),
+  noData: {}, disabledPids: new Set(), rawLogged: new Set(),
   rate: 0, renderQueued: false,
-  dtc: { stored: null, pending: null, mil: null, at: null },
+  dtc: { stored: null, pending: null, mil: null, at: null, ff: undefined },
 };
 const analyzer = new Analyzer();
 
+const u16 = (a, b) => a * 256 + b;
+const s16 = (a, b) => { const v = a * 256 + b; return v >= 0x8000 ? v - 0x10000 : v; };
+const bit = (d, n) => (d[0] >> n) & 1; // octet A des PIDs étendus : capteurs disponibles
+
+/**
+ * Décodage des PIDs mode 01 / 02 (SAE J1979). len = nombre d'octets de données attendus.
+ * exp = décodage des PIDs « étendus », moins répandus : les octets bruts sont journalisés à la 1re lecture pour vérification.
+ */
 const PID_DEFS = {
-  0x04: { key: 'load', decode: (d) => (d[0] * 100) / 255 },
-  0x05: { key: 'ect', decode: (d) => d[0] - 40 },
-  0x0B: { key: 'map', decode: (d) => d[0] },
-  0x0C: { key: 'rpm', decode: (d) => (d[0] * 256 + d[1]) / 4 },
-  0x0D: { key: 'speed', decode: (d) => d[0] },
-  0x33: { key: 'baro', decode: (d) => d[0] },
+  0x04: { len: 1, decode: (d) => ({ load: (d[0] * 100) / 255 }) },
+  0x05: { len: 1, decode: (d) => ({ ect: d[0] - 40 }) },
+  0x0B: { len: 1, decode: (d) => ({ map: d[0] }) },
+  0x0C: { len: 2, decode: (d) => ({ rpm: u16(d[0], d[1]) / 4 }) },
+  0x0D: { len: 1, decode: (d) => ({ speed: d[0] }) },
+  0x0F: { len: 1, decode: (d) => ({ iat: d[0] - 40 }) },
+  0x10: { len: 2, decode: (d) => ({ maf: u16(d[0], d[1]) / 100 }) },
+  0x23: { len: 2, decode: (d) => ({ rail: u16(d[0], d[1]) / 10 }) },                // 10 kPa par bit → bar
+  0x2C: { len: 1, decode: (d) => ({ egrCmd: (d[0] * 100) / 255 }) },
+  0x2D: { len: 1, decode: (d) => ({ egrErr: (d[0] * 100) / 128 - 100 }) },
+  0x33: { len: 1, decode: (d) => ({ baro: d[0] }) },
+  0x49: { len: 1, decode: (d) => ({ pedal: (d[0] * 100) / 255 }) },
+  0x5E: { len: 2, decode: (d) => ({ fuelRate: u16(d[0], d[1]) / 20 }) },
+  0x66: { len: 5, exp: true, decode: (d) => ({ maf: bit(d, 0) ? u16(d[1], d[2]) / 32 : null }) },
+  0x69: { len: 7, exp: true, decode: (d) => ({
+    egrCmd: bit(d, 0) ? (d[1] * 100) / 255 : null,
+    egrAct: bit(d, 1) ? (d[2] * 100) / 255 : null,
+    egrErr: bit(d, 2) ? (d[3] * 100) / 128 - 100 : null }) },
+  0x6D: { len: 11, exp: true, decode: (d) => ({
+    railCmd: bit(d, 0) ? u16(d[1], d[2]) / 10 : null,
+    rail: bit(d, 1) ? u16(d[3], d[4]) / 10 : null }) },
+  0x70: { len: 10, exp: true, decode: (d) => ({
+    boostCmd: bit(d, 0) ? u16(d[1], d[2]) / 32 : null,
+    boost: bit(d, 1) ? u16(d[3], d[4]) / 32 : null }) },
+  0x71: { len: 6, exp: true, decode: (d) => ({
+    vgtCmd: bit(d, 0) ? (d[1] * 100) / 255 : null,
+    vgt: bit(d, 1) ? (d[2] * 100) / 255 : null }) },
+  0x74: { len: 5, exp: true, decode: (d) => ({ turboRpm: bit(d, 0) ? u16(d[1], d[2]) * 10 : null }) },
+  0x77: { len: 5, exp: true, decode: (d) => ({ cact: bit(d, 0) ? d[1] - 40 : null }) },
+  0x78: { len: 9, exp: true, decode: (d) => ({ egt: bit(d, 0) ? u16(d[1], d[2]) / 10 - 40 : null }) },
+  0x7A: { len: 7, exp: true, decode: (d) => ({
+    dpfDp: bit(d, 0) ? s16(d[1], d[2]) / 100 : null,
+    dpfIn: bit(d, 1) ? u16(d[3], d[4]) / 100 : null,
+    dpfOut: bit(d, 2) ? u16(d[5], d[6]) / 100 : null }) },
+  0x7C: { len: 9, exp: true, decode: (d) => ({
+    dpfTin: bit(d, 0) ? u16(d[1], d[2]) / 10 - 40 : null,
+    dpfTout: bit(d, 1) ? u16(d[3], d[4]) / 10 - 40 : null }) },
+  0x87: { len: 5, exp: true, decode: (d) => ({ mapExt: bit(d, 0) ? u16(d[1], d[2]) / 32 : null }) },
+  0x8B: { len: 7, exp: true, decode: (d) => ({
+    regen: bit(d, 0) ? !!(d[1] & 1) : null,
+    regenActive: bit(d, 1) ? !!(d[1] & 2) : null,
+    dpfLoad: bit(d, 4) ? (d[2] * 100) / 255 : null,
+    regenAvgMin: bit(d, 5) ? u16(d[3], d[4]) : null,
+    regenAvgKm: bit(d, 6) ? u16(d[5], d[6]) : null }) },
 };
+
+/** Libellés des PIDs mode 01 (pour la liste des PIDs supportés). */
+const PID_NAMES = {
+  0x01: 'État MIL / moniteurs', 0x03: 'État boucle carburant', 0x04: 'Charge moteur', 0x05: 'Temp. liquide',
+  0x0B: 'Pression collecteur (MAP)', 0x0C: 'Régime', 0x0D: 'Vitesse', 0x0F: 'Temp. air admission',
+  0x10: 'Débit d\'air (MAF)', 0x11: 'Papillon', 0x1C: 'Norme OBD', 0x1F: 'Temps depuis démarrage',
+  0x21: 'Distance avec MIL', 0x23: 'Pression de rampe', 0x2C: 'EGR consigne', 0x2D: 'Erreur EGR',
+  0x30: 'Chauffes depuis effacement', 0x31: 'Distance depuis effacement', 0x33: 'Pression atmosphérique',
+  0x41: 'Moniteurs du cycle', 0x42: 'Tension calculateur', 0x45: 'Papillon relatif', 0x46: 'Temp. ambiante',
+  0x47: 'Papillon B', 0x49: 'Pédale D', 0x4A: 'Pédale E', 0x4C: 'Papillon consigne', 0x4D: 'Temps avec MIL',
+  0x4E: 'Temps depuis effacement', 0x51: 'Type de carburant', 0x5C: 'Temp. huile', 0x5E: 'Débit carburant',
+  0x61: 'Couple demandé', 0x62: 'Couple réel', 0x63: 'Couple de référence', 0x64: 'Points de couple',
+  0x65: 'Entrées/sorties auxiliaires', 0x66: 'Débit d\'air (MAF étendu)', 0x67: 'Temp. liquide (étendue)',
+  0x68: 'Temp. air admission (étendue)', 0x69: 'EGR consigne / réel', 0x6A: 'Volet d\'admission consigne / réel',
+  0x6B: 'Temp. EGR', 0x6C: 'Papillon consigne / réel', 0x6D: 'Pression rampe consigne / réel',
+  0x6E: 'Pression injection', 0x6F: 'Pression entrée turbo', 0x70: 'Suralimentation consigne / réel',
+  0x71: 'Géométrie variable consigne / réel', 0x72: 'Wastegate', 0x73: 'Pression échappement',
+  0x74: 'Régime turbo', 0x75: 'Temp. turbo A', 0x76: 'Temp. turbo B', 0x77: 'Temp. air suralimenté',
+  0x78: 'Temp. échappement B1', 0x79: 'Temp. échappement B2', 0x7A: 'FAP B1', 0x7B: 'FAP B2',
+  0x7C: 'Temp. FAP', 0x7D: 'Zone NOx NTE', 0x7E: 'Zone PM NTE', 0x7F: 'Temps de fonctionnement',
+  0x81: 'Temps AECD 1', 0x82: 'Temps AECD 2', 0x83: 'Capteur NOx', 0x84: 'Temp. collecteur',
+  0x85: 'Système réactif NOx', 0x86: 'Capteur particules', 0x87: 'MAP étendue',
+  0x88: 'Système SCR', 0x8B: 'Post-traitement diesel (FAP)', 0x8C: 'Sonde O2 large bande',
+  0x8D: 'Papillon G', 0x8E: 'Couple de friction', 0x8F: 'Capteur particules B1/B2', 0x9D: 'Débit carburant moteur',
+  0x9E: 'Débit échappement', 0xA6: 'Kilométrage',
+};
+
+/** Libellés et unités des valeurs décodées (données figées, cartes avancées). */
+const VALUE_META = {
+  rpm: ['Régime', 'tr/min', 0], speed: ['Vitesse', 'km/h', 0], load: ['Charge moteur', '%', 0], ect: ['Temp. liquide', '°C', 0],
+  map: ['MAP', 'kPa', 0], mapExt: ['MAP (étendue)', 'kPa', 0], boost: ['Suralimentation réelle', 'kPa', 0], boostCmd: ['Suralimentation consigne', 'kPa', 0],
+  iat: ['Temp. air admission', '°C', 0], cact: ['Temp. air suralimenté', '°C', 0], maf: ['Débit d\'air', 'g/s', 1],
+  rail: ['Pression rampe', 'bar', 0], railCmd: ['Pression rampe consigne', 'bar', 0],
+  egrCmd: ['EGR consigne', '%', 0], egrAct: ['EGR réelle', '%', 0], egrErr: ['Erreur EGR', '%', 0],
+  vgtCmd: ['Géométrie consigne', '%', 0], vgt: ['Géométrie réelle', '%', 0],
+  baro: ['Pression atmo', 'kPa', 0], pedal: ['Pédale', '%', 0], fuelRate: ['Débit carburant', 'L/h', 1],
+};
+
+/** PIDs relus dans les données figées (mode 02), s'ils sont supportés en mode 01. */
+const FF_PIDS = [0x0C, 0x0D, 0x04, 0x05, 0x0B, 0x87, 0x70, 0x0F, 0x10, 0x23, 0x6D, 0x2C, 0x71, 0x49, 0x33];
 
 const currentBaro = () => state.values.baro ?? 101;
 
@@ -1719,7 +2107,7 @@ async function connectAdapter({ reuse = false } = {}) {
 
   state.busy = true;
   const transport = reuse ? state.lastTransport : sim
-    ? new SimTransport({ leak: $('#opt-sim-leak').checked })
+    ? new SimTransport({ fault: $('#opt-sim-fault').value })
     : new BleTransport({ acceptAll: $('#opt-all-devices').checked });
   transport.onDisconnect = onTransportLost;
   setConnState('connecting', sim ? 'Démarrage du simulateur…' : reuse ? 'Reconnexion…' : 'Choisissez votre adaptateur dans la fenêtre du navigateur…');
@@ -1735,6 +2123,7 @@ async function connectAdapter({ reuse = false } = {}) {
     const elm = new ELM327(transport);
     elm.fast = $('#opt-fast').checked;
     state.elm = elm;
+    state.disabledPids = new Set(); state.rawLogged = new Set();
     await elm.initialize(setConnDetail);
     Log.add('ok', `Adaptateur initialisé : ${elm.version || 'version inconnue'}`);
     await updateVoltage();
@@ -1749,6 +2138,7 @@ async function connectAdapter({ reuse = false } = {}) {
       toast('Adaptateur connecté, mais le véhicule ne répond pas. Mettez le contact puis lancez le Live.', 'warn');
     }
     renderAdapterInfo();
+    buildAdvancedCards();
   } catch (e) {
     const { level, text } = explainError(e, transport);
     Log.add(level, text);
@@ -1776,6 +2166,7 @@ async function disconnectAdapter() {
   state.manualDisconnect = false;
   setConnState('disconnected', 'Aucun adaptateur connecté.');
   renderAdapterInfo();
+  buildAdvancedCards();
 }
 
 function onTransportLost() {
@@ -1812,10 +2203,42 @@ function pushHist(key, v) {
 
 async function readAndStore(pid) {
   const def = PID_DEFS[pid];
-  const v = def.decode(await state.elm.readPid(pid, { live: true }));
-  state.values[def.key] = v;
-  pushHist(def.key, v);
-  return v;
+  const d = await state.elm.readPid(pid, { live: true });
+  if (d.length < def.len) throw new ElmError('BAD_RESPONSE', `01${hex2(pid)} : ${d.length} octet(s) reçu(s), ${def.len} attendu(s)`);
+  const vals = def.decode(d);
+  if (def.exp && !state.rawLogged.has(pid)) {
+    state.rawLogged.add(pid);
+    const decoded = Object.entries(vals).map(([k, v]) => `${k}=${typeof v === 'number' ? fmtNum(v, 1) : v}`).join(', ');
+    Log.add('info', `PID 01${hex2(pid)} (${PID_NAMES[pid] || '?'}) — octets bruts ${d.map(hex2).join(' ')} → ${decoded}`);
+  }
+  for (const [k, v] of Object.entries(vals)) {
+    state.values[k] = v;
+    if (typeof v === 'number' && !Number.isNaN(v)) pushHist(k, v);
+  }
+  // Source de MAP étendue : on bascule sur la suivante si le capteur n'est pas renseigné.
+  if (pid === state.mapSource && pid !== 0x0B) {
+    const m = pid === 0x87 ? vals.mapExt : vals.boost;
+    if (m != null) { state.values.map = m; pushHist('map', m); }
+    else {
+      state.mapSource = pid === 0x87 && state.elm.supports(0x70) ? 0x70 : 0x0B;
+      Log.add('warn', `PID 01${hex2(pid)} sans capteur de pression A : MAP lue via 01${hex2(state.mapSource)}.`);
+    }
+  }
+  return vals;
+}
+
+/** Liste des PIDs d'un cycle Live : essentiels à chaque cycle, diagnostic un cycle sur deux, le reste en alternance. */
+function buildCycle(elm, cycle) {
+  const ok = (pid) => elm.supports(pid) && !state.disabledPids.has(pid);
+  const list = [0x0C, state.mapSource, 0x0D, 0x04];
+  if (cycle % 2 === 0) {
+    if (state.mapSource !== 0x70) list.push(0x70);
+    list.push(ok(0x6D) ? 0x6D : 0x23, ok(0x66) ? 0x66 : 0x10, 0x71);
+    if (ok(0x69)) list.push(0x69); else list.push(0x2C, 0x2D);
+  }
+  const slow = [0x05, 0x0F, 0x77, 0x49, 0x5E, 0x7A, 0x7C, 0x8B, 0x78, 0x74].filter(ok);
+  if (slow.length) list.push(slow[cycle % slow.length]);
+  return [...new Set(list)].filter(ok);
 }
 
 async function startLive() {
@@ -1836,6 +2259,8 @@ async function startLive() {
   }
   state.live = true;
   state.noData = {};
+  state.mapSource = elm.supports(0x87) && elm.supported?.size ? 0x87 : elm.supports(0x70) && elm.supported?.size ? 0x70 : 0x0B;
+  Log.add('info', `Pression d'admission lue via le PID 01${hex2(state.mapSource)}${state.mapSource === 0x0B ? ' (plafonné à 255 kPa)' : ' (au-delà de 255 kPa)'}.`);
   updateLiveButton();
   keepAwake(true);
   Log.add('info', 'Mode Live démarré.');
@@ -1860,12 +2285,11 @@ async function liveLoop() {
   let cycle = 0, timeouts = 0, lastRateT = performance.now(), cyclesSinceRate = 0;
   const elm = state.elm;
   while (state.live && state.elm === elm) {
-    const pids = [0x0C, 0x0B, 0x0D, 0x04];
-    if (cycle % 6 === 0) pids.push(0x05);
+    const pids = buildCycle(elm, cycle);
     let ok = 0;
     for (const pid of pids) {
       if (!state.live) break;
-      if (!elm.supports(pid) || state.disabledPids.has(pid)) continue;
+      if (state.disabledPids.has(pid)) continue;
       try {
         await readAndStore(pid);
         ok++; timeouts = 0; state.noData[pid] = 0;
@@ -1905,8 +2329,8 @@ async function liveLoop() {
     }
 
     const v = state.values;
-    const sample = { t: performance.now(), rpm: v.rpm, map: v.map, ect: v.ect, speed: v.speed, load: elm.supports(0x04) && !state.disabledPids.has(0x04) ? v.load : null };
-    if (v.map != null) pushHist('boost', (v.map - currentBaro()) / 100);
+    const sample = { ...v, t: performance.now(), load: elm.supports(0x04) && !state.disabledPids.has(0x04) ? v.load : null };
+    if (v.map != null) pushHist('boostRel', (v.map - currentBaro()) / 100);
     try {
       analyzer.push(sample, state.profile, currentBaro());
       AccelTest.feed(sample, state.profile, currentBaro(), analyzer.ctx);
@@ -1949,13 +2373,13 @@ function updateLiveButton() {
  * ===================================================================== */
 const MAIN_CARDS = [
   { key: 'rpm', label: 'Régime moteur', icon: 'gauge', unit: 'tr/min', pid: '010C', color: '#f59e0b', bar: 'bg-amber-500', max: (p) => p.redline + 500, dec: 0 },
-  { key: 'map', label: 'Pression admission (MAP)', icon: 'wind', unit: 'kPa', pid: '010B', color: '#38bdf8', bar: 'bg-sky-400', max: () => 260, dec: 0 },
+  { key: 'map', label: 'Pression admission (MAP)', icon: 'wind', unit: 'kPa', pid: '010B', color: '#38bdf8', bar: 'bg-sky-400', max: () => 300, dec: 0 },
   { key: 'ect', label: 'Liquide de refroidissement', icon: 'thermometer', unit: '°C', pid: '0105', color: '#f87171', bar: 'bg-red-400', max: () => 120, dec: 0 },
   { key: 'speed', label: 'Vitesse véhicule', icon: 'car-front', unit: 'km/h', pid: '010D', color: '#a78bfa', bar: 'bg-violet-400', max: () => 200, dec: 0 },
 ];
 const SECONDARY_CARDS = [
   { key: 'load', label: 'Charge moteur', icon: 'activity', unit: '%', sub: 'PID 0104', color: '#34d399', max: () => 100, dec: 0 },
-  { key: 'boost', label: 'Suralimentation relative', icon: 'trending-up', unit: 'bar', sub: 'MAP − pression atmo', color: '#38bdf8', max: () => 1.6, dec: 2 },
+  { key: 'boostRel', label: 'Suralimentation relative', icon: 'trending-up', unit: 'bar', sub: 'MAP − pression atmo', color: '#38bdf8', max: () => 1.6, dec: 2 },
   { key: 'volt', label: 'Tension batterie', icon: 'battery-medium', unit: 'V', sub: 'ATRV (adaptateur)', color: '#facc15', max: () => 16, dec: 1 },
   { key: 'baro', label: 'Pression atmosphérique', icon: 'mountain', unit: 'kPa', sub: 'PID 0133', color: '#a1a1aa', max: () => 110, dec: 0 },
 ];
@@ -2018,7 +2442,7 @@ function renderLive() {
   for (const c of [...MAIN_CARDS, ...SECONDARY_CARDS]) {
     const card = $(`#card-${c.key}`);
     if (!card) continue;
-    const v = c.key === 'boost' ? (state.values.map != null ? (state.values.map - currentBaro()) / 100 : null) : state.values[c.key];
+    const v = c.key === 'boostRel' ? (state.values.map != null ? (state.values.map - currentBaro()) / 100 : null) : state.values[c.key];
     card.querySelector('[data-value]').textContent = fmtNum(v, c.dec);
     const bar = card.querySelector('[data-bar]');
     if (bar && v != null) bar.style.width = `${clamp((v / c.max(p)) * 100, 0, 100)}%`;
@@ -2035,14 +2459,88 @@ function renderLive() {
     }
     if (c.key === 'map' && v != null) {
       const b = (v - currentBaro()) / 100;
-      card.querySelector('[data-sub]').textContent = `PID 010B · ${b >= 0 ? '+' : ''}${fmtNum(b, 2)} bar relatifs${v >= 255 ? ' · plafond PID atteint' : ''}`;
+      const capped = state.mapSource === 0x0B && v >= 254;
+      card.querySelector('[data-sub]').textContent = `PID 01${hex2(state.mapSource)} · ${b >= 0 ? '+' : ''}${fmtNum(b, 2)} bar relatifs${capped ? ' · plafond PID atteint' : ''}`;
     }
     if (c.key === 'baro') card.querySelector('[data-sub]').textContent = `Source : ${state.baroSource === 'pid' ? 'PID 0133' : state.baroSource}`;
     if (c.key === 'load' && state.disabledPids.has(0x04)) card.querySelector('[data-sub]').textContent = 'Non supporté par le calculateur';
     if (visible) drawSpark(card.querySelector('[data-spark]'), state.hist[c.key] || [], c.color);
   }
+  renderAdvanced(visible);
   $('#live-rate').textContent = `${fmtNum(state.rate, 1)} cycles/s`;
   renderHeaderVolt();
+}
+
+/* ---- Cartes « données avancées » : affichées seulement si le calculateur transmet le PID ---- */
+const ADV_CARDS = [
+  { id: 'boostctl', label: 'Suralimentation — réel / consigne', icon: 'gauge', pids: [0x70], act: 'boost', cmd: 'boostCmd', unit: 'kPa', dec: 0, color: '#38bdf8' },
+  { id: 'rail', label: 'Pression de rampe', icon: 'fuel', pids: [0x6D, 0x23], act: 'rail', cmd: 'railCmd', unit: 'bar', dec: 0, color: '#f472b6' },
+  { id: 'vgt', label: 'Géométrie variable du turbo', icon: 'fan', pids: [0x71], act: 'vgt', cmd: 'vgtCmd', unit: '%', dec: 0, color: '#fbbf24' },
+  { id: 'egr', label: 'Vanne EGR', icon: 'recycle', pids: [0x69, 0x2C, 0x2D], act: 'egrAct', cmd: 'egrCmd', unit: '%', dec: 0, color: '#a3e635',
+    extra: (v) => (v.egrErr != null ? `erreur ${fmtNum(v.egrErr)} %` : '') },
+  { id: 'maf', label: 'Débit d\'air (MAF)', icon: 'air-vent', pids: [0x66, 0x10], act: 'maf', unit: 'g/s', dec: 1, color: '#34d399' },
+  { id: 'iat', label: 'Température air admission', icon: 'thermometer-snowflake', pids: [0x0F], act: 'iat', unit: '°C', dec: 0, color: '#93c5fd' },
+  { id: 'cact', label: 'Température air suralimenté', icon: 'thermometer-sun', pids: [0x77], act: 'cact', unit: '°C', dec: 0, color: '#fda4af' },
+  { id: 'pedal', label: 'Pédale d\'accélérateur', icon: 'footprints', pids: [0x49], act: 'pedal', unit: '%', dec: 0, color: '#c4b5fd' },
+  { id: 'fuel', label: 'Débit carburant', icon: 'droplets', pids: [0x5E], act: 'fuelRate', unit: 'L/h', dec: 1, color: '#fcd34d' },
+  { id: 'egt', label: 'Température échappement', icon: 'flame', pids: [0x78], act: 'egt', unit: '°C', dec: 0, color: '#fb923c' },
+  { id: 'turbo', label: 'Régime turbo', icon: 'fan', pids: [0x74], act: 'turboRpm', unit: 'tr/min', dec: 0, color: '#fbbf24' },
+  { id: 'dpf', label: 'Filtre à particules (FAP)', icon: 'filter', pids: [0x7A, 0x7C, 0x8B], dpf: true },
+];
+
+function buildAdvancedCards() {
+  const elm = state.elm;
+  const box = $('#live-advanced');
+  if (!elm?.supported?.size) {
+    box.innerHTML = '<p class="col-span-full rounded-xl border border-dashed border-zinc-800 p-4 text-center text-xs text-zinc-500">Connectez-vous au véhicule : les données avancées disponibles (consignes calculateur, rampe, débitmètre, FAP…) apparaîtront ici.</p>';
+    $('#adv-count').textContent = '';
+    return;
+  }
+  const cards = ADV_CARDS.filter((c) => c.pids.some((pid) => elm.supported.has(pid)));
+  $('#adv-count').textContent = `${cards.length} / ${ADV_CARDS.length} disponibles sur ce calculateur`;
+  box.innerHTML = cards.length ? cards.map((c) => `
+    <div class="card p-4" id="adv-${c.id}">
+      <div class="flex items-center justify-between gap-2">
+        <h3 class="card-title text-[11px]"><i data-lucide="${c.icon}" class="h-3.5 w-3.5"></i>${c.label}</h3>
+        <span class="font-mono text-[10px] text-zinc-600">${c.pids.filter((pid) => elm.supported.has(pid)).map((pid) => '01' + hex2(pid)).join(' ')}</span>
+      </div>
+      ${c.dpf ? '<dl class="mt-2" data-dpf></dl>' : `
+      <div class="mt-2 flex items-baseline gap-2">
+        <span class="tabular font-mono text-3xl font-bold" data-value>--</span>
+        <span class="text-xs text-zinc-500">${c.unit}</span>
+      </div>
+      <p class="mt-1 h-4 truncate font-mono text-xs text-zinc-400" data-sub></p>
+      <canvas data-spark class="mt-2 h-10 w-full"></canvas>`}
+    </div>`).join('')
+    : '<p class="col-span-full rounded-xl border border-dashed border-zinc-800 p-4 text-center text-xs text-zinc-500">Ce calculateur ne transmet aucune donnée avancée en OBD standard.</p>';
+  refreshIcons();
+}
+
+function renderAdvanced(visible) {
+  const v = state.values;
+  for (const c of ADV_CARDS) {
+    const card = $(`#adv-${c.id}`);
+    if (!card) continue;
+    if (c.dpf) {
+      const row = (k, val) => `<div class="kv"><dt>${k}</dt><dd>${val}</dd></div>`;
+      card.querySelector('[data-dpf]').innerHTML = [
+        row('Régénération', v.regen == null ? '—' : v.regen ? '<span class="text-amber-300">EN COURS</span>' : 'non'),
+        row('Charge (seuil de régé.)', v.dpfLoad != null ? `${fmtNum(v.dpfLoad)} %` : '—'),
+        row('Pression différentielle', v.dpfDp != null ? `${fmtNum(v.dpfDp, 1)} kPa` : '—'),
+        row('Temp. entrée / sortie', v.dpfTin != null ? `${fmtNum(v.dpfTin)} / ${fmtNum(v.dpfTout)} °C` : '—'),
+        row('Régé. moyenne', v.regenAvgKm != null ? `tous les ${fmtNum(v.regenAvgKm)} km` : '—'),
+      ].join('');
+      continue;
+    }
+    const act = v[c.act], cmd = c.cmd ? v[c.cmd] : null;
+    card.querySelector('[data-value]').textContent = fmtNum(act ?? cmd, c.dec);
+    const sub = [];
+    if (act == null && cmd != null) sub.push('consigne seule');
+    else if (cmd != null) sub.push(`consigne ${fmtNum(cmd, c.dec)} ${c.unit} · écart ${act - cmd >= 0 ? '+' : ''}${fmtNum(act - cmd, c.dec)}`);
+    if (c.extra) sub.push(c.extra(v));
+    card.querySelector('[data-sub]').textContent = sub.filter(Boolean).join(' · ');
+    if (visible) drawSpark(card.querySelector('[data-spark]'), state.hist[c.act] || state.hist[c.cmd] || [], c.color, c.cmd && state.hist[c.act] ? state.hist[c.cmd] : null);
+  }
 }
 
 function renderHeaderVolt() {
@@ -2082,14 +2580,22 @@ function fitCanvas(canvas) {
   return { ctx, w, h };
 }
 
-function drawSpark(canvas, values, color) {
+/** Mini-graphique ; overlay (facultatif) = 2e série en pointillés, ex. la consigne du calculateur. */
+function drawSpark(canvas, values, color, overlay = null) {
   const f = canvas && fitCanvas(canvas);
   if (!f || values.length < 2) return;
   const { ctx, w, h } = f;
-  let min = Math.min(...values), max = Math.max(...values);
+  const all = overlay?.length ? [...values, ...overlay] : values;
+  let min = Math.min(...all), max = Math.max(...all);
   if (max - min < 1e-6) { max += 1; min -= 1; }
   const x = (i) => (i / (values.length - 1)) * w;
   const y = (v) => h - 2 - ((v - min) / (max - min)) * (h - 4);
+  if (overlay?.length > 1) {
+    const xo = (i) => w - ((overlay.length - 1 - i) / (values.length - 1)) * w;
+    ctx.beginPath();
+    overlay.forEach((v, i) => (i ? ctx.lineTo(xo(i), y(v)) : ctx.moveTo(xo(i), y(v))));
+    ctx.setLineDash([4, 3]); ctx.strokeStyle = '#a78bfa'; ctx.lineWidth = 1.4; ctx.stroke(); ctx.setLineDash([]);
+  }
   ctx.beginPath();
   values.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
   ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.lineJoin = 'round'; ctx.stroke();
@@ -2106,7 +2612,7 @@ function drawBoostChart(canvas, profile, baro, points = []) {
   const pad = { l: 40, r: 12, t: 12, b: 26 };
   const xMin = 750, xMax = Math.max(4500, (profile.redline || 4500) + 250);
   const curve = profile.map.curve || [];
-  const yMaxData = Math.max(baro + 20, ...curve.map((c) => c[1]), ...points.map((p) => p.map), profile.aspiration === 'turbo' ? 0 : 110);
+  const yMaxData = Math.max(baro + 20, ...curve.map((c) => c[1]), ...points.map((p) => Math.max(p.map, p.cmd ?? 0)), profile.aspiration === 'turbo' ? 0 : 110);
   const yMin = profile.map.idleRef === 'abs' ? 0 : 60;
   const yMax = Math.ceil((yMaxData + 15) / 50) * 50;
   const X = (v) => pad.l + ((v - xMin) / (xMax - xMin)) * (w - pad.l - pad.r);
@@ -2146,11 +2652,18 @@ function drawBoostChart(canvas, profile, baro, points = []) {
     ctx.fillText('Pas de courbe de suralimentation (moteur atmosphérique)', (pad.l + w - pad.r) / 2, pad.t + 16);
   }
 
+  const cmdPts = points.filter((p) => p.cmd != null);
+  if (cmdPts.length > 1) {
+    ctx.setLineDash([5, 4]); ctx.strokeStyle = '#a78bfa'; ctx.lineWidth = 2;
+    ctx.beginPath(); cmdPts.forEach((p, i) => (i ? ctx.lineTo(X(p.rpm), Y(p.cmd)) : ctx.moveTo(X(p.rpm), Y(p.cmd)))); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
   if (points.length > 1) {
     ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
     ctx.beginPath(); points.forEach((p, i) => (i ? ctx.lineTo(X(p.rpm), Y(p.map)) : ctx.moveTo(X(p.rpm), Y(p.map)))); ctx.stroke();
     for (const p of points) {
-      const exp = curve.length ? interp(curve, p.rpm) : null;
+      const exp = p.cmd ?? (curve.length ? interp(curve, p.rpm) : null); // couleur : écart à la consigne, sinon à la courbe
       const ratio = exp ? (p.map - baro) / Math.max(1, exp - baro) : 1;
       ctx.fillStyle = p.rpm < 1500 ? '#38bdf8' : ratio < 0.65 ? '#ef4444' : ratio < 0.82 ? '#f59e0b' : '#34d399';
       ctx.beginPath(); ctx.arc(X(p.rpm), Y(p.map), 2.6, 0, Math.PI * 2); ctx.fill();
@@ -2184,7 +2697,9 @@ function renderDiag() {
     </div>`;
   $('#diag-dot').classList.toggle('hidden', overall !== 'alert');
 
-  $('#rules').innerHTML = RULES.map((rule) => {
+  // Règles non applicables / données non transmises en fin de liste
+  const ordered = [...RULES].sort((a, b) => (analyzer.results[a.id].status === 'na') - (analyzer.results[b.id].status === 'na'));
+  $('#rules').innerHTML = ordered.map((rule) => {
     const r = analyzer.results[rule.id];
     const st = STATUS_STYLE[r.status];
     return `
@@ -2277,6 +2792,7 @@ function renderProfile() {
       <span class="chip border-zinc-700 text-zinc-300"><i data-lucide="cog" class="h-3 w-3"></i>${esc(p.engine || '—')}</span>
       <span class="chip border-zinc-700 text-zinc-300"><i data-lucide="fuel" class="h-3 w-3"></i>${p.fuel === 'diesel' ? 'Diesel' : 'Essence'}</span>
       <span class="chip border-zinc-700 text-zinc-300"><i data-lucide="fan" class="h-3 w-3"></i>${p.aspiration === 'turbo' ? 'Turbo' : 'Atmosphérique'}</span>
+      <span class="chip border-zinc-700 text-zinc-300"><i data-lucide="box" class="h-3 w-3"></i>${fmtNum(p.displacement ?? 1.6, 3)} L</span>
       ${p.years ? `<span class="chip border-zinc-700 text-zinc-300"><i data-lucide="calendar" class="h-3 w-3"></i>${esc(p.years)}</span>` : ''}
     </div>
     <div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -2313,6 +2829,7 @@ const EDITOR_FIELDS = [
   { path: 'engine', label: 'Moteur', type: 'text', span: 'sm:col-span-2' },
   { path: 'years', label: 'Années', type: 'text' },
   { path: 'redline', label: 'Régime maxi (tr/min)', type: 'number' },
+  { path: 'displacement', label: 'Cylindrée (litres)', type: 'number' },
   { path: 'fuel', label: 'Carburant', type: 'select', options: [['diesel', 'Diesel'], ['essence', 'Essence']] },
   { path: 'aspiration', label: 'Admission', type: 'select', options: [['turbo', 'Turbocompressé'], ['atmo', 'Atmosphérique']] },
   { path: 'idle.min', label: 'Ralenti mini (tr/min)', type: 'number' },
@@ -2393,14 +2910,52 @@ function saveEditor() {
 function renderAdapterInfo() {
   const elm = state.elm;
   const row = (k, v) => `<div class="kv"><dt>${k}</dt><dd>${v}</dd></div>`;
-  const sup = elm?.supported?.size ? [...elm.supported].filter((p) => p % 0x20).map(hex2).join(' ') : '—';
+  const sup = elm?.supported?.size ? [...elm.supported].filter((p) => p % 0x20).sort((a, b) => a - b) : [];
+  const has = (pids) => pids.some((pid) => elm?.supported?.has(pid));
+  const caps = sup.length ? `
+    <ul class="mt-1 grid gap-1 text-xs">${PID_CAPABILITIES.map(([label, pids]) => `
+      <li class="flex items-center gap-1.5 ${has(pids) ? 'text-emerald-300' : 'text-zinc-500'}">
+        <i data-lucide="${has(pids) ? 'circle-check' : 'circle-minus'}" class="h-3.5 w-3.5 shrink-0"></i>${label}
+      </li>`).join('')}
+    </ul>` : '—';
   $('#adapter-info').innerHTML = [
     row('Appareil', esc(elm ? state.deviceName : '—')),
     row('Puce', esc(elm?.version || '—')),
     row('Protocole', esc(elm?.protocolDesc || (elm?.protocol != null ? `n° ${elm.protocol}` : '—'))),
     row('Tension', state.values.volt != null && elm ? `${fmtNum(state.values.volt, 1)} V` : '—'),
-    `<div class="kv flex-col items-start"><dt>PIDs mode 01 supportés</dt><dd class="w-full break-words text-left text-[11px] leading-relaxed text-zinc-400">${sup}</dd></div>`,
+    `<div class="kv flex-col items-start"><dt>Diagnostic avancé disponible</dt><dd class="w-full text-left font-sans">${caps}</dd></div>`,
+    `<div class="kv flex-col items-stretch">
+      <div class="flex items-center justify-between"><dt>PIDs mode 01 supportés (${sup.length})</dt>
+        ${sup.length ? '<button type="button" class="btn btn-ghost btn-sm" data-copy-pids><i data-lucide="copy" class="h-3.5 w-3.5"></i>Copier</button>' : ''}</div>
+      <dd class="mt-1 text-left">${sup.length ? `<details class="text-[11px] text-zinc-400"><summary class="cursor-pointer font-mono">${sup.map(hex2).join(' ')}</summary>
+        <ul class="mt-2 grid gap-0.5 font-sans">${sup.map((pid) => `<li><span class="font-mono text-zinc-500">01${hex2(pid)}</span> ${esc(PID_NAMES[pid] || 'PID non répertorié')}</li>`).join('')}</ul></details>` : '—'}</dd>
+    </div>`,
   ].join('');
+  refreshIcons();
+}
+
+const PID_CAPABILITIES = [
+  ['Pression d\'admission au-delà de 255 kPa', [0x87, 0x70]],
+  ['Suralimentation : consigne / réel', [0x70]],
+  ['Pression de rampe : consigne / réel', [0x6D]],
+  ['Pression de rampe (mesure seule)', [0x23]],
+  ['Géométrie variable : consigne / réel', [0x71]],
+  ['Vanne EGR : consigne / réel ou erreur', [0x69, 0x2C, 0x2D]],
+  ['Débitmètre d\'air (MAF)', [0x10, 0x66]],
+  ['Données FAP (pression, température, régénération)', [0x7A, 0x7C, 0x8B]],
+];
+
+/** Rapport texte à copier (pour partager la liste des PIDs du véhicule). */
+function pidReport() {
+  const elm = state.elm;
+  const sup = [...(elm?.supported || [])].filter((p) => p % 0x20).sort((a, b) => a - b);
+  return [
+    `Véhicule : ${state.profile.name}`,
+    `Adaptateur : ${state.deviceName} — ${elm?.version || '?'}`,
+    `Protocole : ${elm?.protocolDesc || elm?.protocol || '?'}`,
+    `PIDs mode 01 (${sup.length}) : ${sup.map(hex2).join(' ')}`,
+    ...sup.map((pid) => `  01${hex2(pid)} ${PID_NAMES[pid] || '?'}`),
+  ].join('\n');
 }
 
 /* =====================================================================
@@ -2445,6 +3000,24 @@ function renderDtc() {
   list(d.stored, '#dtc-stored', '#dtc-stored-count', ['border-red-500/50 bg-red-500/10 text-red-300', 'bg-red-500/15 text-red-300']);
   list(d.pending, '#dtc-pending', '#dtc-pending-count', ['border-amber-500/40 bg-amber-500/10 text-amber-300', 'bg-amber-500/15 text-amber-300']);
   $('#dtc-last').textContent = d.at ? `Dernier scan : ${d.at.toLocaleString('fr-FR')}` : 'Aucun scan effectué.';
+
+  const ff = d.ff;
+  const ffBox = $('#freeze-frame');
+  $('#ff-code').textContent = ff?.dtc || '—';
+  $('#ff-code').className = `chip ${ff ? 'border-sky-500/40 bg-sky-500/10 text-sky-300 font-mono' : 'border-zinc-700 text-zinc-400'}`;
+  if (ff === undefined) ffBox.innerHTML = '<p class="py-3 text-center text-xs text-zinc-500">Lues automatiquement lors du scan, s\'il y a un code confirmé.</p>';
+  else if (ff === null) ffBox.innerHTML = '<p class="py-3 text-center text-xs text-zinc-500">Aucune donnée figée enregistrée par le calculateur.</p>';
+  else {
+    const entries = Object.entries(ff.values).filter(([k, v]) => VALUE_META[k] && typeof v === 'number');
+    ffBox.innerHTML = `
+      <p class="mb-2 text-xs text-zinc-400">Enregistrées lors de la mémorisation de <b class="font-mono text-zinc-200">${esc(ff.dtc)}</b> — ${esc(describeDtc(ff.dtc).desc)}</p>
+      <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">${entries.map(([k, v]) => `
+        <div class="rounded-xl border border-zinc-800 bg-zinc-950/50 p-2.5">
+          <p class="text-[11px] text-zinc-500">${VALUE_META[k][0]}</p>
+          <p class="font-mono text-sm text-zinc-100">${fmtNum(v, VALUE_META[k][2])} <span class="text-zinc-500">${VALUE_META[k][1]}</span></p>
+        </div>`).join('') || '<p class="col-span-full text-xs text-zinc-500">Aucune valeur lisible.</p>'}
+      </div>`;
+  }
   refreshIcons();
 }
 
@@ -2455,7 +3028,7 @@ async function scanDtcs() {
   btn.disabled = true;
   btn.innerHTML = '<i data-lucide="loader-circle" class="h-4 w-4 spin"></i>Scan en cours…';
   refreshIcons();
-  Log.add('info', 'Lecture des codes défauts (modes 01 01, 03, 07)…');
+  Log.add('info', 'Lecture des codes défauts (modes 01 01, 03, 07, 02)…');
   try {
     if (!elm.vehicleOk) await elm.detectVehicle(setConnDetail);
     try {
@@ -2465,6 +3038,13 @@ async function scanDtcs() {
     state.dtc.stored = await elm.readDtcs('03');
     try { state.dtc.pending = await elm.readDtcs('07'); }
     catch (e) { Log.add('warn', `Mode 07 : ${e.message}`); state.dtc.pending = []; }
+    state.dtc.ff = null;
+    if (state.dtc.stored.length) {
+      try {
+        state.dtc.ff = await elm.readFreezeFrame(FF_PIDS.filter((pid) => elm.supports(pid)));
+        if (state.dtc.ff) Log.add('info', `Données figées (${state.dtc.ff.dtc}) : ${Object.entries(state.dtc.ff.values).map(([k, v]) => `${k}=${typeof v === 'number' ? fmtNum(v, 1) : v}`).join(', ')}`);
+      } catch (e) { Log.add('warn', `Données figées (mode 02) : ${e.message}`); }
+    }
     state.dtc.at = new Date();
     const n = state.dtc.stored.length + state.dtc.pending.length;
     Log.add(n ? 'warn' : 'ok', `Scan terminé : ${state.dtc.stored.length} confirmé(s) [${state.dtc.stored.map((x) => x.code).join(', ')}], ${state.dtc.pending.length} en attente [${state.dtc.pending.map((x) => x.code).join(', ')}]`);
@@ -2543,15 +3123,17 @@ function bindEvents() {
   $('#btn-connect-2').addEventListener('click', toggleConn);
   $('#btn-reconnect').addEventListener('click', () => connectAdapter({ reuse: true }));
 
-  $('#opt-sim').addEventListener('change', (e) => {
-    $('#sim-leak-row').classList.toggle('hidden', !e.target.checked);
-    $('#sim-leak-row').classList.toggle('flex', e.target.checked);
-  });
-  $('#opt-sim-leak').addEventListener('change', (e) => {
+  $('#opt-sim').addEventListener('change', (e) => { $('#sim-fault-row').classList.toggle('hidden', !e.target.checked); });
+  $('#opt-sim-fault').addEventListener('change', (e) => {
     if (state.transport?.kind === 'sim') {
-      state.transport.leak = e.target.checked;
-      Log.add('info', `Simulateur : fuite d'air ${e.target.checked ? 'activée' : 'désactivée'}.`);
+      state.transport.fault = e.target.value;
+      Log.add('info', `Simulateur : panne « ${e.target.selectedOptions[0].textContent} ».`);
     }
+  });
+  $('#adapter-info').addEventListener('click', async (e) => {
+    if (!e.target.closest('[data-copy-pids]')) return;
+    try { await navigator.clipboard.writeText(pidReport()); toast('Liste des PIDs copiée.', 'ok'); }
+    catch (err) { Log.add('info', pidReport()); toast('Copie impossible : la liste a été écrite dans la Console.', 'warn'); }
   });
   $('#opt-fast').addEventListener('change', (e) => { if (state.elm) state.elm.fast = e.target.checked; });
 
@@ -2634,6 +3216,7 @@ function init() {
   Profiles.load();
   state.profile = Profiles.get(Profiles.activeId()) || PRESET_PROFILES[0];
   buildLiveCards();
+  buildAdvancedCards();
   bindEvents();
   renderProfileSelect();
   renderProfile();
