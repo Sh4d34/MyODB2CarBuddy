@@ -1,0 +1,26 @@
+{
+  "id": "./",
+  "name": "CarBuddy OBD2 — Diagnostic ELM327",
+  "short_name": "CarBuddy",
+  "description": "Diagnostic automobile OBD2 via adaptateur ELM327 Bluetooth : données en direct, analyse turbo, lecture et effacement des codes défauts.",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Mode Live", "short_name": "Live", "url": "./?tab=live", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Diagnostic", "short_name": "Diagnostic", "url": "./?tab=diag", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Codes défauts", "short_name": "Défauts", "url": "./?tab=dtc", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

@@ -1,0 +1,2701 @@
+<!doctype html>
+<html lang="fr" class="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#09090b">
+  <title>CarBuddy OBD2 — Diagnostic ELM327</title>
+  <meta name="description" content="Diagnostic automobile OBD2 via adaptateur ELM327 Bluetooth.">
+
+  <!-- Application installable (PWA) -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CarBuddy">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+
+  <style type="text/tailwindcss">
+    @layer components {
+      .card { @apply rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4 sm:p-5 shadow-xl shadow-black/20; }
+      .card-title { @apply flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-400; }
+      .btn { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition select-none active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100; }
+      .btn-primary { @apply bg-amber-500 text-zinc-950 hover:bg-amber-400; }
+      .btn-ghost { @apply border border-zinc-700 bg-zinc-800/60 text-zinc-200 hover:bg-zinc-800 hover:border-zinc-600; }
+      .btn-danger { @apply bg-red-600 text-white hover:bg-red-500; }
+      .btn-success { @apply bg-emerald-500 text-zinc-950 hover:bg-emerald-400; }
+      .btn-sm { @apply px-3 py-1.5 text-xs rounded-lg; }
+      .input { @apply w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500; }
+      .label { @apply mb-1 block text-xs font-medium text-zinc-400; }
+      .chip { @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold whitespace-nowrap; }
+      .tab-btn { @apply flex shrink-0 items-center gap-2 border-b-2 border-transparent px-3 py-3 text-sm font-medium text-zinc-400 transition hover:text-zinc-100; }
+      .tab-btn.active { @apply border-amber-400 text-amber-300; }
+      .check { @apply h-4 w-4 rounded border-zinc-600 bg-zinc-900 accent-amber-500; }
+      .kv { @apply flex items-center justify-between gap-3 border-b border-zinc-800/70 py-2 text-sm last:border-0; }
+      .kv dt { @apply text-zinc-400; }
+      .kv dd { @apply text-right font-mono text-zinc-100; }
+    }
+  </style>
+  <style>
+    body {
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(245, 158, 11, .07), transparent 60%),
+        radial-gradient(900px 500px at 110% 10%, rgba(56, 189, 248, .05), transparent 60%),
+        #09090b;
+    }
+    .grid-bg {
+      background-image: linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+                        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .tabular { font-variant-numeric: tabular-nums; }
+    /* Encoches / barres système en mode application installée */
+    header { padding-top: env(safe-area-inset-top); }
+    #ticker { padding-bottom: calc(.5rem + env(safe-area-inset-bottom)); }
+    #console.hide-tx .log-tx, #console.hide-rx .log-rx, #console.hide-info .log-info,
+    #console.hide-info .log-ok, #console.hide-warn .log-warn, #console.hide-error .log-error { display: none; }
+    .spin { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .flash { animation: flash .6s ease-out; }
+    @keyframes flash { from { box-shadow: 0 0 0 0 rgba(239, 68, 68, .6); } to { box-shadow: 0 0 0 14px rgba(239, 68, 68, 0); } }
+  </style>
+</head>
+
+<body class="min-h-screen font-sans text-zinc-100 antialiased">
+<div class="grid-bg min-h-screen pb-14">
+
+  <!-- ============================== EN-TÊTE ============================== -->
+  <header class="sticky top-0 z-30 border-b border-zinc-800/80 bg-zinc-950/85 backdrop-blur">
+    <div class="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
+      <div class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/30">
+        <i data-lucide="gauge" class="h-5 w-5"></i>
+      </div>
+      <div class="min-w-0 flex-1">
+        <h1 class="text-base font-extrabold leading-tight tracking-tight">CarBuddy <span class="text-amber-400">OBD2</span></h1>
+        <p id="hdr-vehicle" class="truncate text-xs text-zinc-400">—</p>
+      </div>
+      <span id="hdr-volt" class="chip hidden border-zinc-700 bg-zinc-900 text-zinc-300 sm:inline-flex">
+        <i data-lucide="battery-medium" class="h-3.5 w-3.5"></i><span class="font-mono">-- V</span>
+      </span>
+      <button id="btn-install" class="btn btn-ghost hidden px-3" title="Installer l'application sur cet appareil">
+        <i data-lucide="download" class="h-4 w-4"></i><span class="hidden md:inline">Installer</span>
+      </button>
+      <span id="conn-pill" class="chip border-zinc-700 bg-zinc-900 text-zinc-300">
+        <span class="h-2 w-2 rounded-full bg-zinc-500" data-dot></span><span data-label>Déconnecté</span>
+      </span>
+      <button id="btn-connect" class="btn btn-primary">
+        <i data-lucide="bluetooth" class="h-4 w-4"></i><span class="hidden sm:inline">Connecter l'adaptateur OBD</span>
+      </button>
+    </div>
+    <nav class="mx-auto max-w-7xl px-2">
+      <div class="no-scrollbar flex overflow-x-auto">
+        <button class="tab-btn active" data-tab="vehicle"><i data-lucide="car" class="h-4 w-4"></i>Véhicule</button>
+        <button class="tab-btn" data-tab="live"><i data-lucide="activity" class="h-4 w-4"></i>Live</button>
+        <button class="tab-btn" data-tab="diag"><i data-lucide="stethoscope" class="h-4 w-4"></i>Diagnostic
+          <span id="diag-dot" class="hidden h-2 w-2 rounded-full bg-red-500"></span></button>
+        <button class="tab-btn" data-tab="dtc"><i data-lucide="triangle-alert" class="h-4 w-4"></i>Défauts (DTC)</button>
+        <button class="tab-btn" data-tab="console"><i data-lucide="terminal" class="h-4 w-4"></i>Console
+          <span id="console-badge" class="hidden rounded-full bg-red-500/20 px-1.5 text-[10px] font-bold text-red-300">0</span></button>
+      </div>
+    </nav>
+  </header>
+
+  <main class="mx-auto max-w-7xl px-4 py-5">
+
+    <!-- ============================== VÉHICULE ============================== -->
+    <section id="tab-vehicle" class="tab-panel space-y-4">
+      <div class="grid gap-4 lg:grid-cols-5">
+
+        <div class="card lg:col-span-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h2 class="card-title"><i data-lucide="car-front" class="h-4 w-4"></i>Profil véhicule</h2>
+            <span id="profile-kind" class="chip border-zinc-700 text-zinc-400">Préréglage</span>
+          </div>
+
+          <div class="mt-4 flex flex-col gap-2 sm:flex-row">
+            <select id="profile-select" class="input sm:flex-1"></select>
+            <div class="flex gap-2">
+              <button id="btn-profile-new" class="btn btn-ghost flex-1 sm:flex-none" title="Créer un profil à partir du profil actuel">
+                <i data-lucide="copy-plus" class="h-4 w-4"></i>Dupliquer
+              </button>
+              <button id="btn-profile-edit" class="btn btn-ghost flex-1 sm:flex-none" title="Modifier ce profil">
+                <i data-lucide="pencil" class="h-4 w-4"></i>Modifier
+              </button>
+              <button id="btn-profile-delete" class="btn btn-ghost text-red-300" title="Supprimer ce profil">
+                <i data-lucide="trash-2" class="h-4 w-4"></i>
+              </button>
+            </div>
+          </div>
+
+          <div id="profile-details" class="mt-5"></div>
+
+          <div class="mt-5">
+            <div class="mb-2 flex items-center justify-between text-xs text-zinc-400">
+              <span class="flex items-center gap-1.5"><i data-lucide="chart-spline" class="h-3.5 w-3.5"></i>Courbe de pression MAP attendue en pleine charge</span>
+              <span class="font-mono text-zinc-500">kPa absolus</span>
+            </div>
+            <canvas id="profile-chart" class="h-48 w-full rounded-xl border border-zinc-800 bg-zinc-950/60"></canvas>
+          </div>
+        </div>
+
+        <div class="card space-y-4 lg:col-span-2">
+          <h2 class="card-title"><i data-lucide="bluetooth" class="h-4 w-4"></i>Connexion OBD2</h2>
+
+          <div id="conn-box" class="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+            <div class="flex items-center gap-3">
+              <div id="conn-icon" class="grid h-11 w-11 place-items-center rounded-xl bg-zinc-800 text-zinc-400">
+                <i data-lucide="bluetooth-off" class="h-5 w-5"></i>
+              </div>
+              <div class="min-w-0">
+                <p id="conn-title" class="font-semibold">Déconnecté</p>
+                <p id="conn-detail" class="truncate text-xs text-zinc-400">Aucun adaptateur appairé.</p>
+              </div>
+            </div>
+            <div class="mt-4 flex gap-2">
+              <button id="btn-connect-2" class="btn btn-primary flex-1">
+                <i data-lucide="bluetooth-searching" class="h-4 w-4"></i>Connecter l'adaptateur OBD
+              </button>
+              <button id="btn-reconnect" class="btn btn-ghost hidden" title="Reconnecter le dernier adaptateur">
+                <i data-lucide="rotate-ccw" class="h-4 w-4"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-2.5 text-sm">
+            <label class="flex items-start gap-2.5">
+              <input id="opt-all-devices" type="checkbox" class="check mt-0.5">
+              <span><span class="text-zinc-200">Afficher tous les appareils Bluetooth</span>
+                <span class="block text-xs text-zinc-500">À cocher si votre adaptateur n'apparaît pas dans la liste filtrée.</span></span>
+            </label>
+            <label class="flex items-start gap-2.5">
+              <input id="opt-fast" type="checkbox" class="check mt-0.5" checked>
+              <span><span class="text-zinc-200">Requêtes rapides (CAN)</span>
+                <span class="block text-xs text-zinc-500">Ajoute le nombre de réponses attendues (ex. <code class="font-mono">010C1</code>) pour accélérer le Live. Désactivé automatiquement si l'adaptateur ne le gère pas.</span></span>
+            </label>
+            <label class="flex items-start gap-2.5">
+              <input id="opt-sim" type="checkbox" class="check mt-0.5">
+              <span><span class="text-zinc-200">Mode démo (simulateur ELM327)</span>
+                <span class="block text-xs text-zinc-500">Teste l'interface sans véhicule : ralenti → accélération → croisière, avec codes défauts fictifs.</span></span>
+            </label>
+            <label id="sim-leak-row" class="ml-6 hidden items-start gap-2.5">
+              <input id="opt-sim-leak" type="checkbox" class="check mt-0.5">
+              <span class="text-zinc-300">Simuler une fuite d'air / chute de suralimentation</span>
+            </label>
+          </div>
+
+          <dl id="adapter-info" class="rounded-xl border border-zinc-800 bg-zinc-950/40 px-4 py-1"></dl>
+
+          <details class="group rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-100/80">
+            <summary class="flex cursor-pointer list-none items-center gap-2 font-semibold text-amber-300">
+              <i data-lucide="info" class="h-4 w-4"></i>Pré-requis matériel &amp; navigateur
+              <i data-lucide="chevron-down" class="ml-auto h-4 w-4 transition group-open:rotate-180"></i>
+            </summary>
+            <ul class="mt-2 list-disc space-y-1 pl-5">
+              <li>Adaptateur ELM327 <b>Bluetooth Low Energy (BLE / 4.0)</b> obligatoire (Vgate iCar Pro BLE, Veepeak BLE, vLinker FS/MC BLE, OBDLink CX…). Les modèles « Bluetooth classique » (SPP) ne sont pas accessibles par le Web Bluetooth.</li>
+              <li>Navigateur : Chrome / Edge sur Android, Windows, macOS, ChromeOS. Sur iPhone : application <b>Bluefy</b>.</li>
+              <li>La page doit être servie en <b>HTTPS</b> ou via <code class="font-mono">http://localhost</code>.</li>
+              <li>Ne pas appairer l'adaptateur dans les réglages Bluetooth du système : la sélection se fait depuis cette page.</li>
+              <li><b>Installer l'application</b> : sur Android, bouton « Installer » en haut de l'écran ou menu ⋮ › « Installer l'application ». Elle s'ouvre ensuite en plein écran et fonctionne sans réseau (le Bluetooth reste nécessaire).</li>
+              <li>Prise OBD du X-Trail T32 : sous la planche de bord, côté conducteur, à gauche de la colonne de direction.</li>
+            </ul>
+          </details>
+        </div>
+      </div>
+
+      <!-- Éditeur de profil -->
+      <div id="profile-editor" class="card hidden">
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="card-title"><i data-lucide="sliders-horizontal" class="h-4 w-4"></i><span id="editor-title">Nouveau profil</span></h2>
+          <button id="btn-editor-close" class="btn btn-ghost btn-sm"><i data-lucide="x" class="h-4 w-4"></i></button>
+        </div>
+        <form id="profile-form" class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"></form>
+        <div class="mt-4 flex flex-wrap justify-end gap-2">
+          <button id="btn-editor-cancel" class="btn btn-ghost">Annuler</button>
+          <button id="btn-editor-save" class="btn btn-primary"><i data-lucide="save" class="h-4 w-4"></i>Enregistrer le profil</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== LIVE ============================== -->
+    <section id="tab-live" class="tab-panel hidden space-y-4">
+      <div class="flex flex-wrap items-center gap-3">
+        <button id="btn-live" class="btn btn-success"><i data-lucide="play" class="h-4 w-4"></i>Démarrer le Live</button>
+        <span id="live-rate" class="chip border-zinc-700 bg-zinc-900 font-mono text-zinc-400">0.0 Hz</span>
+        <button id="btn-live-reset" class="btn btn-ghost btn-sm"><i data-lucide="rotate-ccw" class="h-3.5 w-3.5"></i>Réinitialiser min/max</button>
+        <p id="live-hint" class="text-xs text-zinc-500">Connectez l'adaptateur puis démarrez la lecture en boucle.</p>
+      </div>
+      <div id="live-main" class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"></div>
+      <div id="live-secondary" class="grid grid-cols-2 gap-3 lg:grid-cols-4"></div>
+    </section>
+
+    <!-- ============================== DIAGNOSTIC ============================== -->
+    <section id="tab-diag" class="tab-panel hidden space-y-4">
+      <div id="diag-banner" class="card flex items-center gap-4"></div>
+
+      <div class="grid gap-4 lg:grid-cols-3">
+        <div class="space-y-4 lg:col-span-2">
+          <div id="rules" class="grid gap-3 sm:grid-cols-2"></div>
+        </div>
+        <div class="card flex max-h-[34rem] flex-col">
+          <div class="flex items-center justify-between">
+            <h2 class="card-title"><i data-lucide="history" class="h-4 w-4"></i>Historique des anomalies</h2>
+            <button id="btn-history-clear" class="btn btn-ghost btn-sm">Vider</button>
+          </div>
+          <ul id="diag-history" class="mt-3 flex-1 space-y-2 overflow-y-auto pr-1"></ul>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h2 class="card-title"><i data-lucide="flask-conical" class="h-4 w-4"></i>Test guidé : montée en pression à l'accélération</h2>
+          <div class="flex gap-2">
+            <button id="btn-accel-start" class="btn btn-primary btn-sm"><i data-lucide="play" class="h-3.5 w-3.5"></i>Lancer le test</button>
+            <button id="btn-accel-cancel" class="btn btn-ghost btn-sm hidden">Annuler</button>
+          </div>
+        </div>
+        <div class="mt-4 grid gap-4 lg:grid-cols-5">
+          <div class="space-y-3 lg:col-span-2">
+            <ol class="space-y-2 text-sm text-zinc-300">
+              <li class="flex gap-2"><span class="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-zinc-800 text-[11px] font-bold">1</span><span>Moteur chaud, sur route dégagée, <b>un passager manipule l'appareil</b>.</span></li>
+              <li class="flex gap-2"><span class="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-zinc-800 text-[11px] font-bold">2</span><span>Stabilisez vers 1 200 – 1 500 tr/min en 3<sup>e</sup> (boîte manuelle) ou en D (CVT).</span></li>
+              <li class="flex gap-2"><span class="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-zinc-800 text-[11px] font-bold">3</span><span>Lancez le test puis accélérez <b>à fond</b> jusqu'à ~3 500 tr/min.</span></li>
+              <li class="flex gap-2"><span class="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-zinc-800 text-[11px] font-bold">4</span><span>L'enregistrement démarre et s'arrête automatiquement (au relâchement de l'accélérateur).</span></li>
+            </ol>
+            <p class="text-xs text-zinc-500">Un diesel turbo ne monte pas en pression à vide (véhicule à l'arrêt) : le test n'a de sens qu'en charge.</p>
+            <div id="accel-status" class="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3 text-sm"></div>
+            <div id="accel-result"></div>
+          </div>
+          <div class="lg:col-span-3">
+            <canvas id="accel-chart" class="h-64 w-full rounded-xl border border-zinc-800 bg-zinc-950/60"></canvas>
+            <div class="mt-2 flex flex-wrap gap-4 text-[11px] text-zinc-400">
+              <span class="flex items-center gap-1.5"><span class="h-0.5 w-5 border-t-2 border-dashed border-amber-400"></span>MAP attendue</span>
+              <span class="flex items-center gap-1.5"><span class="h-2.5 w-5 rounded-sm bg-amber-400/15"></span>Tolérance</span>
+              <span class="flex items-center gap-1.5"><span class="h-0.5 w-5 bg-sky-400"></span>MAP mesurée</span>
+              <span class="flex items-center gap-1.5"><span class="h-0.5 w-5 border-t border-dotted border-zinc-400"></span>Pression atmosphérique</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== DTC ============================== -->
+    <section id="tab-dtc" class="tab-panel hidden space-y-4">
+      <div class="grid gap-4 lg:grid-cols-3">
+        <div class="card space-y-4">
+          <h2 class="card-title"><i data-lucide="siren" class="h-4 w-4"></i>Voyant moteur (MIL)</h2>
+          <div id="mil-status" class="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"></div>
+          <div class="grid gap-2">
+            <button id="btn-dtc-scan" class="btn btn-primary"><i data-lucide="scan-search" class="h-4 w-4"></i>Scanner les défauts</button>
+            <button id="btn-dtc-clear" class="btn btn-danger"><i data-lucide="eraser" class="h-4 w-4"></i>Effacer les codes défauts</button>
+          </div>
+          <p id="dtc-last" class="text-xs text-zinc-500">Aucun scan effectué.</p>
+          <div class="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-400">
+            <p class="font-semibold text-zinc-300">Modes OBD utilisés</p>
+            <ul class="mt-1 space-y-0.5 font-mono">
+              <li>01 01 · état MIL + nombre de codes</li>
+              <li>03 · codes confirmés (mémorisés)</li>
+              <li>07 · codes en attente (cycle en cours)</li>
+              <li>04 · effacement codes + données figées</li>
+            </ul>
+          </div>
+        </div>
+        <div class="space-y-4 lg:col-span-2">
+          <div class="card">
+            <div class="flex items-center justify-between">
+              <h2 class="card-title"><i data-lucide="octagon-alert" class="h-4 w-4 text-red-400"></i>Codes confirmés <span class="font-mono text-zinc-600">(mode 03)</span></h2>
+              <span id="dtc-stored-count" class="chip border-zinc-700 text-zinc-400">—</span>
+            </div>
+            <ul id="dtc-stored" class="mt-3 space-y-2"></ul>
+          </div>
+          <div class="card">
+            <div class="flex items-center justify-between">
+              <h2 class="card-title"><i data-lucide="clock-alert" class="h-4 w-4 text-amber-400"></i>Codes en attente <span class="font-mono text-zinc-600">(mode 07)</span></h2>
+              <span id="dtc-pending-count" class="chip border-zinc-700 text-zinc-400">—</span>
+            </div>
+            <ul id="dtc-pending" class="mt-3 space-y-2"></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== CONSOLE ============================== -->
+    <section id="tab-console" class="tab-panel hidden">
+      <div class="card overflow-hidden p-0 sm:p-0">
+        <div class="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-2.5">
+          <div id="log-filters" class="flex flex-wrap gap-1.5">
+            <button class="chip border-sky-500/40 bg-sky-500/10 text-sky-300" data-filter="tx">TX</button>
+            <button class="chip border-emerald-500/40 bg-emerald-500/10 text-emerald-300" data-filter="rx">RX</button>
+            <button class="chip border-zinc-500/40 bg-zinc-500/10 text-zinc-300" data-filter="info">INFO</button>
+            <button class="chip border-amber-500/40 bg-amber-500/10 text-amber-300" data-filter="warn">WARN</button>
+            <button class="chip border-red-500/40 bg-red-500/10 text-red-300" data-filter="error">ERR</button>
+          </div>
+          <label class="ml-1 flex items-center gap-1.5 text-xs text-zinc-400"><input id="log-live" type="checkbox" class="check">Trames du Live</label>
+          <label class="flex items-center gap-1.5 text-xs text-zinc-400"><input id="log-autoscroll" type="checkbox" class="check" checked>Défilement auto</label>
+          <div class="ml-auto flex gap-1.5">
+            <button id="btn-log-copy" class="btn btn-ghost btn-sm" title="Copier"><i data-lucide="copy" class="h-3.5 w-3.5"></i></button>
+            <button id="btn-log-download" class="btn btn-ghost btn-sm" title="Télécharger"><i data-lucide="download" class="h-3.5 w-3.5"></i></button>
+            <button id="btn-log-clear" class="btn btn-ghost btn-sm" title="Vider"><i data-lucide="trash-2" class="h-3.5 w-3.5"></i></button>
+          </div>
+        </div>
+        <div id="console" class="h-[58vh] overflow-y-auto bg-black/40 px-3 py-2 font-mono text-[12px] leading-relaxed"></div>
+        <form id="cmd-form" class="flex flex-wrap items-center gap-2 border-t border-zinc-800 px-3 py-2.5">
+          <span class="font-mono text-amber-400">&gt;</span>
+          <input id="cmd-input" class="input min-w-[10rem] flex-1 font-mono uppercase" placeholder="Commande AT ou OBD (ex. ATRV, 010C)" autocomplete="off" spellcheck="false">
+          <button class="btn btn-primary btn-sm" type="submit"><i data-lucide="send" class="h-3.5 w-3.5"></i>Envoyer</button>
+          <div class="flex w-full flex-wrap gap-1.5">
+            <button type="button" class="btn btn-ghost btn-sm font-mono" data-quick="ATI">ATI</button>
+            <button type="button" class="btn btn-ghost btn-sm font-mono" data-quick="ATRV">ATRV</button>
+            <button type="button" class="btn btn-ghost btn-sm font-mono" data-quick="ATDP">ATDP</button>
+            <button type="button" class="btn btn-ghost btn-sm font-mono" data-quick="0100">0100</button>
+            <button type="button" class="btn btn-ghost btn-sm font-mono" data-quick="0101">0101</button>
+            <button type="button" class="btn btn-ghost btn-sm font-mono" data-quick="010C">010C</button>
+            <button type="button" class="btn btn-ghost btn-sm font-mono" data-quick="010B">010B</button>
+          </div>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <!-- Dernière ligne de log -->
+  <button id="ticker" class="fixed inset-x-0 bottom-0 z-20 flex items-center gap-2 border-t border-zinc-800 bg-zinc-950/95 px-4 py-2 text-left font-mono text-[11px] text-zinc-400 backdrop-blur">
+    <i data-lucide="terminal" class="h-3.5 w-3.5 shrink-0 text-amber-400"></i><span id="ticker-text" class="truncate">Prêt.</span>
+  </button>
+</div>
+
+<!-- Modale d'effacement des DTC -->
+<div id="modal-clear" class="fixed inset-0 z-50 hidden place-items-center bg-black/75 p-4 backdrop-blur-sm">
+  <div class="card w-full max-w-md border-red-500/40 bg-zinc-900">
+    <div class="flex items-center gap-3">
+      <div class="grid h-11 w-11 place-items-center rounded-xl bg-red-500/15 text-red-400"><i data-lucide="shield-alert" class="h-5 w-5"></i></div>
+      <h3 class="text-lg font-bold">Effacer les codes défauts ?</h3>
+    </div>
+    <ul class="mt-4 list-disc space-y-1.5 pl-5 text-sm text-zinc-300">
+      <li>Efface les codes confirmés et en attente, les <b>données figées</b> (freeze frame) et éteint le voyant moteur.</li>
+      <li>Réinitialise les <b>moniteurs de disponibilité</b> (readiness) : à refaire avant un contrôle technique.</li>
+      <li>Si la panne est toujours présente, le code et le voyant reviendront.</li>
+      <li>Procédure recommandée : <b>contact mis, moteur arrêté</b>.</li>
+    </ul>
+    <label class="mt-4 flex items-start gap-2.5 rounded-xl border border-zinc-800 bg-zinc-950/60 p-3 text-sm">
+      <input id="clear-ack" type="checkbox" class="check mt-0.5">
+      <span>J'ai noté les codes défauts et je confirme que le moteur est à l'arrêt, contact mis.</span>
+    </label>
+    <div class="mt-5 flex justify-end gap-2">
+      <button id="btn-clear-cancel" class="btn btn-ghost">Annuler</button>
+      <button id="btn-clear-confirm" class="btn btn-danger" disabled><i data-lucide="eraser" class="h-4 w-4"></i>Effacer définitivement</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" class="pointer-events-none fixed bottom-12 right-3 z-[60] flex w-[min(92vw,22rem)] flex-col gap-2"></div>
+
+<script>
+'use strict';
+
+/* =====================================================================
+ * Utilitaires
+ * ===================================================================== */
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const mean = (arr) => (arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : NaN);
+const stdev = (arr) => { const m = mean(arr); return Math.sqrt(mean(arr.map((v) => (v - m) ** 2))); };
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const hex2 = (n) => n.toString(16).toUpperCase().padStart(2, '0');
+const fmtClock = (d = new Date()) => d.toLocaleTimeString('fr-FR', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+const fmtNum = (v, dec = 0) => (v == null || Number.isNaN(v) ? '--' : Number(v).toLocaleString('fr-FR', { minimumFractionDigits: dec, maximumFractionDigits: dec }));
+const getPath = (obj, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+const setPath = (obj, path, val) => { const keys = path.split('.'); const last = keys.pop(); keys.reduce((o, k) => (o[k] ??= {}), obj)[last] = val; };
+const refreshIcons = () => { if (window.lucide) window.lucide.createIcons(); };
+
+/** Interpolation linéaire sur une courbe [[x, y], ...] triée. */
+function interp(curve, x) {
+  if (!curve?.length) return NaN;
+  if (x <= curve[0][0]) return curve[0][1];
+  for (let i = 1; i < curve.length; i++) {
+    const [x1, y1] = curve[i];
+    if (x <= x1) { const [x0, y0] = curve[i - 1]; return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0); }
+  }
+  return curve[curve.length - 1][1];
+}
+
+/* =====================================================================
+ * Console intégrée
+ * ===================================================================== */
+const Log = {
+  el: null, max: 2000, lines: [], errors: 0, autoscroll: true, liveFrames: false,
+  LEVELS: {
+    tx: { tag: 'TX  ', cls: 'text-sky-400' },
+    rx: { tag: 'RX  ', cls: 'text-emerald-400' },
+    info: { tag: 'INFO', cls: 'text-zinc-400' },
+    ok: { tag: 'OK  ', cls: 'text-emerald-300' },
+    warn: { tag: 'WARN', cls: 'text-amber-400' },
+    error: { tag: 'ERR ', cls: 'text-red-400' },
+  },
+  add(level, msg, { live = false } = {}) {
+    if (live && !this.liveFrames) return;
+    const lv = this.LEVELS[level] || this.LEVELS.info;
+    const time = fmtClock();
+    const text = `${time} ${lv.tag} ${msg}`;
+    this.lines.push(text);
+    if (this.lines.length > this.max) this.lines.shift();
+    (level === 'error' ? console.error : level === 'warn' ? console.warn : console.log)(`[OBD] ${text}`);
+
+    if (this.el) {
+      const row = document.createElement('div');
+      row.className = `log-${level} whitespace-pre-wrap break-all`;
+      const msgCls = level === 'error' ? 'text-red-300' : level === 'warn' ? 'text-amber-200' : level === 'tx' || level === 'rx' ? 'text-zinc-300' : 'text-zinc-200';
+      row.innerHTML = `<span class="text-zinc-600">${time}</span> <span class="${lv.cls} font-bold">${lv.tag}</span> <span class="${msgCls}">${esc(msg)}</span>`;
+      this.el.appendChild(row);
+      while (this.el.childElementCount > this.max) this.el.firstElementChild.remove();
+      if (this.autoscroll) this.el.scrollTop = this.el.scrollHeight;
+    }
+    if (level !== 'tx' && level !== 'rx') $('#ticker-text').textContent = `${lv.tag.trim()} · ${msg}`;
+    if (level === 'error') {
+      this.errors++;
+      const b = $('#console-badge');
+      b.textContent = this.errors; b.classList.remove('hidden');
+    }
+  },
+  clear() {
+    this.lines = []; this.errors = 0;
+    if (this.el) this.el.innerHTML = '';
+    $('#console-badge').classList.add('hidden');
+  },
+};
+
+function toast(msg, type = 'info') {
+  const styles = {
+    info: ['border-sky-500/40', 'text-sky-300', 'info'],
+    ok: ['border-emerald-500/40', 'text-emerald-300', 'circle-check'],
+    warn: ['border-amber-500/40', 'text-amber-300', 'triangle-alert'],
+    error: ['border-red-500/50', 'text-red-300', 'circle-x'],
+  }[type] || [];
+  const el = document.createElement('div');
+  el.className = `pointer-events-auto flex items-start gap-2.5 rounded-xl border ${styles[0]} bg-zinc-900/95 p-3 text-sm shadow-2xl backdrop-blur transition duration-300`;
+  el.innerHTML = `<i data-lucide="${styles[2]}" class="mt-0.5 h-4 w-4 shrink-0 ${styles[1]}"></i><span class="text-zinc-200">${esc(msg)}</span>`;
+  $('#toasts').appendChild(el);
+  refreshIcons();
+  setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateY(6px)'; }, 4200);
+  setTimeout(() => el.remove(), 4600);
+}
+
+/* =====================================================================
+ * Profils véhicules (seuils de référence)
+ * Valeurs indicatives : à affiner avec vos propres relevés sur véhicule sain.
+ * ===================================================================== */
+const PRESET_PROFILES = [
+  {
+    id: 'nissan-xtrail-t32-r9m', preset: true,
+    name: 'Nissan X-Trail T32 — 1.6 dCi 130 (R9M)',
+    make: 'Nissan', model: 'X-Trail (T32)', engine: '1.6 dCi R9M — 130 ch / 320 Nm', years: '2014 – 2017',
+    fuel: 'diesel', aspiration: 'turbo', redline: 4500,
+    idle: { min: 750, max: 900, stability: 35 },
+    coolant: { warmMin: 80, normalMax: 103, alarm: 110 },
+    map: {
+      idleRef: 'baro', idleMin: -8, idleMax: 15, loadThreshold: 70, max: 250, collapseDrop: 25,
+      curve: [[1250, 125], [1500, 160], [1750, 200], [2000, 220], [2500, 235], [3000, 235], [3500, 225], [4000, 210]],
+    },
+    notes: "Turbo à géométrie variable, FAP, EGR. Couple maxi dès 1 750 tr/min : en pleine charge, la pression doit monter franchement entre 1 500 et 2 000 tr/min. Le PID standard 010B plafonne à 255 kPa.",
+  },
+  {
+    id: 'nissan-qashqai-j11-k9k', preset: true,
+    name: 'Nissan Qashqai J11 — 1.5 dCi 110 (K9K)',
+    make: 'Nissan', model: 'Qashqai (J11)', engine: '1.5 dCi K9K — 110 ch / 260 Nm', years: '2014 – 2018',
+    fuel: 'diesel', aspiration: 'turbo', redline: 4500,
+    idle: { min: 770, max: 880, stability: 35 },
+    coolant: { warmMin: 80, normalMax: 103, alarm: 110 },
+    map: {
+      idleRef: 'baro', idleMin: -8, idleMax: 15, loadThreshold: 70, max: 240, collapseDrop: 25,
+      curve: [[1250, 120], [1500, 150], [1750, 185], [2000, 205], [2500, 215], [3000, 215], [3500, 205], [4000, 195]],
+    },
+    notes: 'Turbo à géométrie variable, FAP. Profil générique dérivé des valeurs usuelles du K9K.',
+  },
+  {
+    id: 'generic-diesel-turbo', preset: true,
+    name: 'Générique — Diesel turbo',
+    make: 'Générique', model: 'Diesel turbo', engine: 'Diesel turbocompressé (common rail)', years: '',
+    fuel: 'diesel', aspiration: 'turbo', redline: 4500,
+    idle: { min: 720, max: 950, stability: 40 },
+    coolant: { warmMin: 78, normalMax: 105, alarm: 112 },
+    map: {
+      idleRef: 'baro', idleMin: -8, idleMax: 15, loadThreshold: 70, max: 250, collapseDrop: 25,
+      curve: [[1250, 120], [1500, 145], [2000, 190], [2500, 210], [3000, 210], [4000, 190]],
+    },
+    notes: 'Seuils larges, adaptés à la plupart des diesels turbo modernes.',
+  },
+  {
+    id: 'generic-petrol-turbo', preset: true,
+    name: 'Générique — Essence turbo',
+    make: 'Générique', model: 'Essence turbo', engine: 'Essence turbocompressé (injection directe)', years: '',
+    fuel: 'essence', aspiration: 'turbo', redline: 6200,
+    idle: { min: 620, max: 850, stability: 30 },
+    coolant: { warmMin: 80, normalMax: 105, alarm: 112 },
+    map: {
+      idleRef: 'abs', idleMin: 22, idleMax: 50, loadThreshold: 80, max: 230, collapseDrop: 25,
+      curve: [[1500, 120], [2000, 160], [2500, 180], [3000, 185], [4500, 185], [5500, 175]],
+    },
+    notes: 'Au ralenti, un moteur essence est en dépression (MAP bien inférieure à la pression atmosphérique).',
+  },
+  {
+    id: 'generic-petrol-na', preset: true,
+    name: 'Générique — Essence atmosphérique',
+    make: 'Générique', model: 'Essence atmo', engine: 'Essence atmosphérique', years: '',
+    fuel: 'essence', aspiration: 'atmo', redline: 6500,
+    idle: { min: 620, max: 850, stability: 30 },
+    coolant: { warmMin: 80, normalMax: 105, alarm: 112 },
+    map: { idleRef: 'abs', idleMin: 22, idleMax: 45, loadThreshold: 80, max: 110, collapseDrop: 25, curve: [] },
+    notes: 'Pas de suralimentation : seules les règles de ralenti, de dépression et de température s\'appliquent.',
+  },
+];
+
+const Profiles = {
+  KEY_CUSTOM: 'carbuddy.profiles.v1',
+  KEY_ACTIVE: 'carbuddy.activeProfile',
+  custom: [],
+  load() {
+    try { this.custom = JSON.parse(localStorage.getItem(this.KEY_CUSTOM) || '[]'); }
+    catch { this.custom = []; }
+  },
+  persist() {
+    try { localStorage.setItem(this.KEY_CUSTOM, JSON.stringify(this.custom)); }
+    catch (e) { Log.add('warn', `Impossible d'enregistrer les profils : ${e.message}`); }
+  },
+  all() { return [...PRESET_PROFILES, ...this.custom]; },
+  get(id) { return this.all().find((p) => p.id === id); },
+  activeId() { try { return localStorage.getItem(this.KEY_ACTIVE); } catch { return null; } },
+  setActive(id) { try { localStorage.setItem(this.KEY_ACTIVE, id); } catch { /* stockage indisponible */ } },
+  upsert(p) {
+    const i = this.custom.findIndex((x) => x.id === p.id);
+    if (i >= 0) this.custom[i] = p; else this.custom.push(p);
+    this.persist();
+  },
+  remove(id) { this.custom = this.custom.filter((p) => p.id !== id); this.persist(); },
+};
+
+/* =====================================================================
+ * Base de codes défauts (descriptions génériques SAE J2012)
+ * ===================================================================== */
+const DTC_DB = {
+  P0016: 'Corrélation position vilebrequin / arbre à cames (banc 1, capteur A)',
+  P0045: 'Circuit de commande de régulation turbo A — ouvert',
+  P0046: 'Circuit de commande de régulation turbo A — plage / performance',
+  P0068: 'Corrélation pression collecteur (MAP) / débit d\'air (MAF) / papillon',
+  P0069: 'Corrélation pression collecteur (MAP) / pression barométrique',
+  P0087: 'Pression de rampe carburant trop basse',
+  P0088: 'Pression de rampe carburant trop haute',
+  P0089: 'Régulateur de pression carburant 1 — performance',
+  P0093: 'Fuite importante du circuit carburant détectée',
+  P0100: 'Circuit débitmètre d\'air (MAF) A',
+  P0101: 'Débitmètre d\'air (MAF) A — plage / performance',
+  P0102: 'Débitmètre d\'air (MAF) A — signal bas',
+  P0103: 'Débitmètre d\'air (MAF) A — signal haut',
+  P0105: 'Circuit capteur pression absolue collecteur (MAP) / baro',
+  P0106: 'Capteur MAP / baro — plage / performance',
+  P0107: 'Capteur MAP / baro — signal bas',
+  P0108: 'Capteur MAP / baro — signal haut',
+  P0110: 'Circuit capteur température d\'air d\'admission',
+  P0115: 'Circuit capteur température liquide de refroidissement',
+  P0116: 'Capteur température liquide de refroidissement — plage / performance',
+  P0117: 'Capteur température liquide de refroidissement — signal bas',
+  P0118: 'Capteur température liquide de refroidissement — signal haut',
+  P0128: 'Température liquide de refroidissement sous le seuil du thermostat',
+  P0180: 'Circuit capteur température carburant A',
+  P0190: 'Circuit capteur pression de rampe carburant',
+  P0191: 'Capteur pression de rampe — plage / performance',
+  P0192: 'Capteur pression de rampe — signal bas',
+  P0193: 'Capteur pression de rampe — signal haut',
+  P0200: 'Circuit injecteurs',
+  P0201: 'Circuit injecteur — cylindre 1',
+  P0202: 'Circuit injecteur — cylindre 2',
+  P0203: 'Circuit injecteur — cylindre 3',
+  P0204: 'Circuit injecteur — cylindre 4',
+  P0217: 'Surchauffe moteur',
+  P0219: 'Surrégime moteur',
+  P0234: 'Surpression de suralimentation (overboost) — turbo A',
+  P0235: 'Circuit capteur de suralimentation A',
+  P0236: 'Capteur de suralimentation A — plage / performance',
+  P0237: 'Capteur de suralimentation A — signal bas',
+  P0238: 'Capteur de suralimentation A — signal haut',
+  P0263: 'Contribution / équilibrage cylindre 1',
+  P0266: 'Contribution / équilibrage cylindre 2',
+  P0269: 'Contribution / équilibrage cylindre 3',
+  P0272: 'Contribution / équilibrage cylindre 4',
+  P0299: 'Sous-pression de suralimentation (underboost) — turbo A',
+  P0300: 'Ratés d\'allumage / combustion multiples détectés',
+  P0301: 'Ratés détectés — cylindre 1',
+  P0302: 'Ratés détectés — cylindre 2',
+  P0303: 'Ratés détectés — cylindre 3',
+  P0304: 'Ratés détectés — cylindre 4',
+  P0335: 'Circuit capteur position vilebrequin A',
+  P0340: 'Circuit capteur position arbre à cames A',
+  P0380: 'Circuit bougies de préchauffage A',
+  P0381: 'Circuit témoin de préchauffage',
+  P0400: 'Débit de recirculation des gaz d\'échappement (EGR)',
+  P0401: 'Débit EGR insuffisant',
+  P0402: 'Débit EGR excessif',
+  P0403: 'Circuit de commande EGR',
+  P0404: 'Circuit de commande EGR — plage / performance',
+  P0405: 'Capteur position EGR A — signal bas',
+  P0406: 'Capteur position EGR A — signal haut',
+  P0420: 'Efficacité du catalyseur sous le seuil (banc 1)',
+  P0470: 'Circuit capteur pression échappement',
+  P0471: 'Capteur pression échappement — plage / performance',
+  P0480: 'Circuit de commande motoventilateur 1',
+  P0500: 'Capteur vitesse véhicule A',
+  P0560: 'Tension système',
+  P0562: 'Tension système basse',
+  P0563: 'Tension système haute',
+  P0571: 'Circuit contacteur de frein A',
+  P0606: 'Processeur du calculateur moteur',
+  P0670: 'Circuit module de commande des bougies de préchauffage',
+  P0700: 'Système de commande de transmission (demande d\'allumage MIL)',
+  P2002: 'Efficacité du filtre à particules sous le seuil (banc 1)',
+  P2031: 'Circuit capteur température gaz d\'échappement (banc 1, capteur 2)',
+  P2135: 'Corrélation capteurs position pédale / papillon A/B',
+  P2227: 'Capteur pression barométrique — plage / performance',
+  P2263: 'Performance du système de suralimentation turbo',
+  P2413: 'Performance du système EGR',
+  P242F: 'Restriction filtre à particules — accumulation de cendres',
+  P2452: 'Circuit capteur pression différentielle FAP A',
+  P2453: 'Capteur pression différentielle FAP A — plage / performance',
+  P2454: 'Capteur pression différentielle FAP A — signal bas',
+  P2455: 'Capteur pression différentielle FAP A — signal haut',
+  P2458: 'Durée de régénération du filtre à particules',
+  P2459: 'Fréquence de régénération du filtre à particules',
+  P2463: 'Restriction filtre à particules — accumulation de suies',
+  P2563: 'Capteur position commande de suralimentation turbo — plage / performance',
+  U0001: 'Bus CAN haute vitesse',
+  U0100: 'Perte de communication avec le calculateur moteur (ECM/PCM)',
+  U0101: 'Perte de communication avec le calculateur de boîte (TCM)',
+  U0121: 'Perte de communication avec le calculateur ABS',
+  U0140: 'Perte de communication avec le boîtier de servitude (BCM)',
+};
+
+const DTC_SYSTEMS = { P: 'Groupe motopropulseur', C: 'Châssis', B: 'Carrosserie', U: 'Réseau / communication' };
+const P_SUBSYSTEMS = {
+  0: 'Dosage air / carburant', 1: 'Dosage air / carburant', 2: 'Injection / dosage', 3: 'Allumage / ratés',
+  4: 'Antipollution auxiliaire', 5: 'Vitesse / ralenti / entrées', 6: 'Calculateur / sorties',
+  7: 'Transmission', 8: 'Transmission', 9: 'Transmission', A: 'Hybride', B: 'Hybride', C: 'Hybride',
+};
+
+function describeDtc(code) {
+  const sys = DTC_SYSTEMS[code[0]] || '—';
+  // P1xxx et P30xx–P33xx : constructeur. C/B/U : x1xx et x2xx constructeur.
+  const d = code[1];
+  const manufacturer = code[0] === 'P' ? d === '1' || (d === '3' && code[2] <= '3') : d === '1' || d === '2';
+  let desc = DTC_DB[code];
+  if (!desc) desc = manufacturer
+    ? 'Code spécifique constructeur — consulter la documentation atelier (Nissan / Renault).'
+    : 'Description non disponible dans la base intégrée.';
+  const sub = code[0] === 'P' ? P_SUBSYSTEMS[code[2]] : null;
+  return { desc, sys, sub, manufacturer, known: !!DTC_DB[code] };
+}
+
+function ecuName(header) {
+  if (!header) return 'ECU';
+  const h = header.toUpperCase();
+  const names = { '7E8': 'Moteur (ECM)', '7E9': 'Boîte (TCM)', '7EA': 'ECU #3', '7EB': 'ECU #4', '18DAF110': 'Moteur (ECM)', '18DAF118': 'Boîte (TCM)' };
+  if (names[h]) return `${names[h]} · ${h}`;
+  if (h.length === 6 && h.endsWith('10')) return `Moteur (ECM) · ${h}`;
+  return `ECU ${h}`;
+}
+
+/* =====================================================================
+ * Transport Web Bluetooth (BLE UART des adaptateurs ELM327)
+ * ===================================================================== */
+const BLE_SERVICES = [
+  '0000fff0-0000-1000-8000-00805f9b34fb', // la plupart des clones ELM327 BLE, Veepeak, OBDLink CX
+  '0000ffe0-0000-1000-8000-00805f9b34fb', // modules HM-10 / CC2541
+  '000018f0-0000-1000-8000-00805f9b34fb', // Vgate iCar Pro BLE
+  'e7810a71-73ae-499d-8c15-faa9aef0c3f2', // vLinker / Vgate (UART propriétaire)
+  '49535343-fe7d-4ae5-8fa9-9fafd205e455', // Microchip ISSC transparent UART
+  '0000ae30-0000-1000-8000-00805f9b34fb',
+];
+const BLE_NAME_PREFIXES = ['OBD', 'ELM', 'Vgate', 'vLink', 'VLINK', 'V-LINK', 'IOS-Vlink', 'Android-Vlink', 'VEEPEAK', 'Veepeak', 'OBDLink', 'KONNWEI', 'iCar', 'LELink', 'VIECAR', 'Carista'];
+
+class TransportError extends Error {
+  constructor(code, message) { super(message); this.name = 'TransportError'; this.code = code; }
+}
+
+class BleTransport {
+  constructor({ acceptAll = false } = {}) {
+    this.acceptAll = acceptAll;
+    this.kind = 'ble';
+    this.onData = null;
+    this.onDisconnect = null;
+    this.device = null; this.rx = null; this.tx = null;
+    this.decoder = new TextDecoder('utf-8');
+    this.encoder = new TextEncoder();
+    this.manualClose = false;
+    this._onNotify = (ev) => {
+      const v = ev.target.value;
+      this.onData?.(this.decoder.decode(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)));
+    };
+    this._onGattDisconnected = () => {
+      Log.add(this.manualClose ? 'info' : 'warn', `GATT déconnecté (${this.device?.name || 'adaptateur'}).`);
+      this.rx = this.tx = null;
+      if (!this.manualClose) this.onDisconnect?.();
+    };
+  }
+
+  get connected() { return !!(this.device?.gatt?.connected && this.tx); }
+
+  async connect() {
+    const options = this.acceptAll
+      ? { acceptAllDevices: true, optionalServices: BLE_SERVICES }
+      : {
+          filters: [
+            ...BLE_SERVICES.map((s) => ({ services: [s] })),
+            ...BLE_NAME_PREFIXES.map((namePrefix) => ({ namePrefix })),
+          ],
+          optionalServices: BLE_SERVICES,
+        };
+    Log.add('info', `Ouverture du sélecteur Bluetooth (${this.acceptAll ? 'tous les appareils' : 'filtre adaptateurs OBD'})…`);
+    this.device = await navigator.bluetooth.requestDevice(options);
+    Log.add('info', `Appareil sélectionné : « ${this.device.name || 'sans nom'} » (id ${this.device.id})`);
+    this.device.removeEventListener('gattserverdisconnected', this._onGattDisconnected);
+    this.device.addEventListener('gattserverdisconnected', this._onGattDisconnected);
+    await this._setupGatt();
+    return { name: this.device.name || 'Adaptateur BLE' };
+  }
+
+  async reconnect() {
+    if (!this.device) throw new TransportError('NO_DEVICE', 'Aucun adaptateur mémorisé.');
+    this.manualClose = false;
+    Log.add('info', `Reconnexion à « ${this.device.name || 'adaptateur'} »…`);
+    await this._setupGatt();
+    return { name: this.device.name || 'Adaptateur BLE' };
+  }
+
+  async _setupGatt() {
+    Log.add('info', 'Connexion au serveur GATT…');
+    const server = await this.device.gatt.connect();
+    const services = await server.getPrimaryServices();
+    Log.add('info', `Services GATT trouvés : ${services.map((s) => s.uuid.slice(4, 8)).join(', ') || 'aucun'}`);
+
+    // On privilégie l'ordre des services connus, puis on cherche une paire notify + write.
+    const rank = (s) => { const i = BLE_SERVICES.indexOf(s.uuid); return i === -1 ? 99 : i; };
+    services.sort((a, b) => rank(a) - rank(b));
+    for (const svc of services) {
+      let chars;
+      try { chars = await svc.getCharacteristics(); } catch { continue; }
+      const rx = chars.find((c) => c.properties.notify || c.properties.indicate);
+      const tx = chars.find((c) => c.properties.writeWithoutResponse || c.properties.write);
+      if (rx && tx) {
+        this.rx = rx; this.tx = tx;
+        Log.add('info', `UART BLE : service ${svc.uuid.slice(4, 8)} · RX ${rx.uuid.slice(4, 8)} (notify) · TX ${tx.uuid.slice(4, 8)} (${tx.properties.writeWithoutResponse ? 'write sans réponse' : 'write'})`);
+        break;
+      }
+    }
+    if (!this.rx || !this.tx) {
+      throw new TransportError('NO_UART', "Aucun canal série BLE (notify + write) trouvé sur cet appareil. S'agit-il bien d'un ELM327 BLE ?");
+    }
+    this.rx.removeEventListener('characteristicvaluechanged', this._onNotify);
+    this.rx.addEventListener('characteristicvaluechanged', this._onNotify);
+    await this.rx.startNotifications();
+    Log.add('ok', 'Notifications BLE actives.');
+  }
+
+  async write(str) {
+    if (!this.connected) throw new TransportError('NOT_CONNECTED', 'Adaptateur Bluetooth non connecté.');
+    const data = this.encoder.encode(str);
+    const noResp = this.tx.properties.writeWithoutResponse;
+    for (let i = 0; i < data.length; i += 20) {           // MTU BLE par défaut : 20 octets utiles
+      const chunk = data.slice(i, i + 20);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          if (noResp && this.tx.writeValueWithoutResponse) await this.tx.writeValueWithoutResponse(chunk);
+          else if (this.tx.writeValueWithResponse) await this.tx.writeValueWithResponse(chunk);
+          else await this.tx.writeValue(chunk);
+          break;
+        } catch (e) {
+          // « GATT operation already in progress » : on retente brièvement.
+          if (attempt < 2 && /in progress/i.test(e.message)) { await sleep(30); continue; }
+          throw e;
+        }
+      }
+    }
+  }
+
+  async disconnect() {
+    this.manualClose = true;
+    try { await this.rx?.stopNotifications(); } catch { /* déjà fermé */ }
+    if (this.device?.gatt?.connected) this.device.gatt.disconnect();
+    this.rx = this.tx = null;
+  }
+}
+
+/* =====================================================================
+ * Simulateur ELM327 (mode démo) — CAN 11 bits 500 kbit/s
+ * ===================================================================== */
+class SimTransport {
+  constructor({ leak = false } = {}) {
+    this.kind = 'sim';
+    this.leak = leak;
+    this.onData = null; this.onDisconnect = null;
+    this.connected = false;
+    this.stored = ['0299', '2463', '0401'];
+    this.pending = ['0101'];
+    this.s = { rpm: 0, map: 100, ect: 38, speed: 0, load: 0 };
+    this.baro = 100;
+    this._resetFlags();
+  }
+  _resetFlags() { this.echo = true; this.spaces = true; this.headers = false; this.searched = false; }
+
+  async connect() {
+    Log.add('info', 'Mode démo : simulateur ELM327 (aucun matériel requis).');
+    await sleep(500);
+    this.t0 = this.last = performance.now();
+    this.connected = true;
+    return { name: 'SIM-ELM327 (démo)' };
+  }
+  async reconnect() { return this.connect(); }
+  async disconnect() { this.connected = false; }
+
+  async write(str) {
+    if (!this.connected) throw new TransportError('NOT_CONNECTED', 'Simulateur arrêté.');
+    const cmd = str.replace(/[\r\n]/g, '').trim();
+    const delay = /^ATZ/i.test(cmd) ? 450 : 25 + Math.random() * 45;
+    setTimeout(() => this._handle(cmd), delay);
+  }
+
+  _emit(text) {
+    // Découpage en paquets de 20 octets pour reproduire la fragmentation BLE.
+    for (let i = 0; i < text.length; i += 20) {
+      const part = text.slice(i, i + 20);
+      setTimeout(() => this.connected && this.onData?.(part), i / 4);
+    }
+  }
+
+  _step() {
+    const now = performance.now();
+    const dt = Math.min(0.5, (now - this.last) / 1000);
+    this.last = now;
+    const elapsed = (now - this.t0) / 1000;
+    const t = elapsed % 42;
+    const s = this.s;
+    let rpmT, loadT, spdT;
+    if (t < 8) { rpmT = 805 + Math.sin(now / 280) * 10; loadT = 18; spdT = 0; }
+    else if (t < 11) { rpmT = 1350; loadT = 45; spdT = 22; }
+    else if (t < 17) { const k = (t - 11) / 6; rpmT = 1400 + k * 2300; loadT = 96; spdT = 25 + k * 45; }
+    else if (t < 27) { rpmT = 2000; loadT = 35; spdT = 70; }
+    else if (t < 33) { const k = (t - 27) / 6; rpmT = 2000 - k * 1150; loadT = 4; spdT = 70 * (1 - k); }
+    else { rpmT = 805 + Math.sin(now / 280) * 10; loadT = 18; spdT = 0; }
+
+    s.rpm += (rpmT - s.rpm) * (1 - Math.exp(-dt / 0.35));
+    s.load += (loadT - s.load) * (1 - Math.exp(-dt / 0.2));
+    s.speed += (spdT - s.speed) * (1 - Math.exp(-dt / 0.8));
+
+    const healthy = [[800, 103], [1250, 130], [1500, 168], [1750, 208], [2000, 228], [2500, 240], [3000, 240], [3500, 232], [4000, 215]];
+    let target = this.baro + 3;
+    if (s.load > 60) target = interp(healthy, s.rpm);
+    else if (s.load > 25) target = this.baro + (s.load - 25) * 1.2;
+    if (this.leak && target > this.baro) {
+      target = this.baro + (target - this.baro) * 0.5;
+      if (s.load > 60 && s.rpm > 2050 && s.rpm < 2600) target = this.baro + 12; // effondrement brutal
+    }
+    s.map += (target - s.map) * (1 - Math.exp(-dt / 0.35));
+    s.ect = 88 - (88 - 38) * Math.exp(-elapsed / 60);
+  }
+
+  _fmt(bytes) { return bytes.map(hex2).join(this.spaces ? ' ' : ''); }
+
+  /** Construit les lignes de réponse ISO-TP comme les afficherait un ELM327. */
+  _frames(header, payload) {
+    const lines = [];
+    if (payload.length <= 7) {
+      if (this.headers) {
+        const frame = [payload.length, ...payload];
+        while (frame.length < 8) frame.push(0x55);
+        lines.push(header + (this.spaces ? ' ' : '') + this._fmt(frame));
+      } else lines.push(this._fmt(payload));
+      return lines;
+    }
+    if (!this.headers) {
+      lines.push(payload.length.toString(16).toUpperCase().padStart(3, '0'));
+      lines.push('0:' + (this.spaces ? ' ' : '') + this._fmt(payload.slice(0, 6)));
+      for (let i = 6, sn = 1; i < payload.length; i += 7, sn++) lines.push(`${(sn & 0xf).toString(16).toUpperCase()}:${this.spaces ? ' ' : ''}${this._fmt(payload.slice(i, i + 7))}`);
+      return lines;
+    }
+    const sep = this.spaces ? ' ' : '';
+    lines.push(header + sep + this._fmt([0x10 | (payload.length >> 8), payload.length & 0xff, ...payload.slice(0, 6)]));
+    for (let i = 6, sn = 1; i < payload.length; i += 7, sn++) {
+      const frame = [0x20 | (sn & 0xf), ...payload.slice(i, i + 7)];
+      while (frame.length < 8) frame.push(0x55);
+      lines.push(header + sep + this._fmt(frame));
+    }
+    return lines;
+  }
+
+  _mask(base, pids) {
+    const m = [0, 0, 0, 0];
+    for (const p of pids) { const i = p - base - 1; if (i >= 0 && i < 32) m[i >> 3] |= 0x80 >> (i & 7); }
+    return m;
+  }
+
+  _dtcBytes(codes) {
+    return codes.flatMap((c) => [parseInt(c.slice(0, 2), 16), parseInt(c.slice(2, 4), 16)]);
+  }
+
+  _obd(cmd) {
+    const mode = cmd.slice(0, 2);
+    const s = this.s;
+    const ecm = [];   // réponses du calculateur moteur (7E8)
+    const tcm = [];   // réponses du calculateur de boîte (7E9)
+    if (mode === '01') {
+      const pid = parseInt(cmd.slice(2, 4), 16);
+      const r = (data) => [0x41, pid, ...data];
+      switch (pid) {
+        case 0x00:
+          ecm.push(r(this._mask(0x00, [0x01, 0x04, 0x05, 0x0B, 0x0C, 0x0D, 0x0F, 0x1C, 0x1F, 0x20])));
+          tcm.push(r(this._mask(0x00, [0x01, 0x0D])));
+          break;
+        case 0x20: ecm.push(r(this._mask(0x20, [0x21, 0x33]))); break;
+        case 0x01: ecm.push(r([(this.stored.length ? 0x80 : 0) | this.stored.length, 0x07, 0x65, 0x00])); break;
+        case 0x04: ecm.push(r([Math.round(clamp(s.load, 0, 100) * 2.55)])); break;
+        case 0x05: ecm.push(r([Math.round(s.ect + 40)])); break;
+        case 0x0B: ecm.push(r([Math.round(clamp(s.map + (Math.random() - 0.5) * 2, 0, 255))])); break;
+        case 0x0C: { const v = Math.round(Math.max(0, s.rpm + (Math.random() - 0.5) * 8) * 4); ecm.push(r([v >> 8, v & 0xff])); break; }
+        case 0x0D: { const v = Math.round(s.speed); ecm.push(r([v])); tcm.push(r([v])); break; }
+        case 0x0F: ecm.push(r([25 + 40])); break;
+        case 0x1C: ecm.push(r([0x06])); break;
+        case 0x1F: { const v = Math.round((performance.now() - this.t0) / 1000); ecm.push(r([v >> 8, v & 0xff])); break; }
+        case 0x21: ecm.push(r([0x00, 0x2A])); break;
+        case 0x33: ecm.push(r([this.baro])); break;
+        default: return null;
+      }
+    } else if (mode === '03') {
+      ecm.push([0x43, this.stored.length, ...this._dtcBytes(this.stored)]);
+    } else if (mode === '07') {
+      ecm.push([0x47, this.pending.length, ...this._dtcBytes(this.pending)]);
+    } else if (mode === '04') {
+      this.stored = []; this.pending = [];
+      ecm.push([0x44]);
+    } else return null;
+
+    let responses = [...ecm.map((p) => ['7E8', p]), ...tcm.map((p) => ['7E9', p])];
+    const fastCount = cmd.length % 2 === 1 ? parseInt(cmd.slice(-1), 16) : 0;
+    if (fastCount) responses = responses.slice(0, fastCount);
+    return responses.flatMap(([h, p]) => this._frames(h, p));
+  }
+
+  _handle(raw) {
+    this._step();
+    const cmd = raw.toUpperCase().replace(/\s+/g, '');
+    const echo = this.echo ? raw + '\r' : '';
+    let out;
+    if (cmd.startsWith('AT')) {
+      const at = cmd.slice(2);
+      if (at === 'Z') { this._resetFlags(); out = ['', 'ELM327 v1.5']; }
+      else if (at === 'I') out = ['ELM327 v1.5'];
+      else if (at === 'RV') out = [`${(this.s.rpm > 400 ? 14.1 : 12.5) + (Math.random() * 0.1)}`.slice(0, 4) + 'V'];
+      else if (at === 'DPN') out = ['A6'];
+      else if (at === 'DP') out = ['AUTO, ISO 15765-4 (CAN 11/500)'];
+      else if (/^E[01]$/.test(at)) { this.echo = at === 'E1'; out = ['OK']; }
+      else if (/^S[01]$/.test(at)) { this.spaces = at === 'S1'; out = ['OK']; }
+      else if (/^H[01]$/.test(at)) { this.headers = at === 'H1'; out = ['OK']; }
+      else if (/^SP[0-9A-C]$/.test(at)) { this.searched = false; out = ['OK']; }
+      else if (/^(L[01]|AT[012]|ST[0-9A-F]{2}|D|PC|CAF[01]|M[01])$/.test(at)) out = ['OK'];
+      else out = ['?'];
+    } else if (/^[0-9A-F]+$/.test(cmd) && cmd.length >= 2) {
+      const lines = this._obd(cmd);
+      out = lines?.length ? lines : ['NO DATA'];
+      if (!this.searched) { out.unshift('SEARCHING...'); this.searched = true; }
+    } else out = ['?'];
+    this._emit(echo + out.join('\r') + '\r\r>');
+  }
+}
+
+/* =====================================================================
+ * Décodage des trames OBD (en-têtes ATH1, espaces ATS0)
+ * ===================================================================== */
+class ElmError extends Error {
+  constructor(code, message) { super(message || code); this.name = 'ElmError'; this.code = code; }
+}
+
+const ELM_ERRORS = [
+  [/^NO DATA/, 'NO_DATA', 'Aucune donnée (PID non supporté ou calculateur muet)'],
+  [/^UNABLE TO CONNECT/, 'UNABLE_TO_CONNECT', 'Impossible de dialoguer avec le véhicule (contact coupé ?)'],
+  [/^CAN ERROR/, 'CAN_ERROR', 'Erreur bus CAN'],
+  [/^BUS (ERROR|BUSY)/, 'BUS_ERROR', 'Erreur / bus occupé'],
+  [/^BUS INIT:.*ERROR/, 'BUS_INIT', 'Échec d\'initialisation du bus'],
+  [/^FB ERROR/, 'FB_ERROR', 'Erreur de rétroaction bus'],
+  [/DATA ERROR/, 'DATA_ERROR', 'Trame corrompue'],
+  [/RX ERROR/, 'RX_ERROR', 'Erreur de réception'],
+  [/^BUFFER FULL/, 'BUFFER_FULL', 'Tampon de l\'adaptateur plein'],
+  [/^STOPPED/, 'STOPPED', 'Requête interrompue'],
+  [/^\?$/, 'UNKNOWN_CMD', 'Commande non reconnue par l\'adaptateur'],
+  [/^(ACT ALERT|LV RESET|LP ALERT)/, 'ADAPTER_RESET', 'Adaptateur en veille / réinitialisé'],
+  [/^ERROR$/, 'ERROR', 'Erreur adaptateur'],
+];
+
+const hexBytes = (s) => { const out = []; for (let i = 0; i + 1 < s.length; i += 2) out.push(parseInt(s.slice(i, i + 2), 16)); return out; };
+
+/**
+ * Transforme les lignes renvoyées par l'ELM327 en messages { header, data[] }.
+ * Gère le CAN 11/29 bits (ISO-TP mono et multi-trames) et les protocoles K-Line / J1850.
+ */
+function parseResponse(lines, proto) {
+  const clean = lines.map((l) => l.replace(/\s+/g, '').toUpperCase()).filter((l) => /^[0-9A-F:]+$/.test(l));
+  const can = proto == null ? null : proto >= 6 && proto <= 9;
+  const ext = proto === 7 || proto === 9;
+  const msgs = [];
+  const multi = new Map();
+  let noHdrLen = null; const noHdrData = [];
+
+  for (const line of clean) {
+    if (line.includes(':')) { noHdrData.push(...hexBytes(line.split(':')[1])); continue; } // multi-trames sans en-tête
+    if (line.length === 3 && !ext) { noHdrLen = parseInt(line, 16); continue; }
+
+    if (can === true || (can === null && line.length % 2 === 1)) {
+      const hdrLen = ext ? 8 : line.length % 2 === 1 ? 3 : 0;
+      if (!hdrLen) { msgs.push({ header: null, data: hexBytes(line) }); continue; } // en-têtes inactifs
+      const header = line.slice(0, hdrLen);
+      const b = hexBytes(line.slice(hdrLen));
+      if (!b.length) continue;
+      const type = b[0] >> 4;
+      if (type === 0) msgs.push({ header, data: b.slice(1, 1 + (b[0] & 0x0f)) });
+      else if (type === 1) multi.set(header, { header, len: ((b[0] & 0x0f) << 8) | b[1], data: b.slice(2) });
+      else if (type === 2) multi.get(header)?.data.push(...b.slice(1));
+    } else {
+      // ISO 9141 / KWP2000 / J1850 : 3 octets d'en-tête + 1 octet de checksum
+      const b = hexBytes(line);
+      if (b.length >= 5) msgs.push({ header: line.slice(0, 6), data: b.slice(3, -1) });
+      else msgs.push({ header: null, data: b });
+    }
+  }
+  for (const m of multi.values()) msgs.push({ header: m.header, data: m.data.slice(0, m.len) });
+  if (noHdrData.length) msgs.push({ header: null, data: noHdrLen ? noHdrData.slice(0, noHdrLen) : noHdrData });
+  return msgs;
+}
+
+/** Préfère la réponse du calculateur moteur quand plusieurs ECU répondent. */
+function pickEcm(msgs) {
+  return msgs.find((m) => /^(7E8|18DAF110)$/.test(m.header || ''))
+    || msgs.find((m) => (m.header || '').length === 6 && m.header.endsWith('10'))
+    || msgs[0];
+}
+
+const decodeDtc = (a, b) => 'PCBU'[a >> 6] + ((a >> 4) & 3) + (a & 0x0f).toString(16).toUpperCase() + hex2(b);
+
+/* =====================================================================
+ * Pilote ELM327 : file de commandes série, timeouts, décodage
+ * ===================================================================== */
+class ELM327 {
+  constructor(transport) {
+    this.t = transport;
+    this.buf = '';
+    this.pending = null;
+    this.chain = Promise.resolve();
+    this.dirty = false;
+    this.version = '';
+    this.protocol = null;
+    this.protocolDesc = '';
+    this.supported = null;
+    this.vehicleOk = false;
+    this.fast = true;
+    transport.onData = (s) => this._onData(s);
+  }
+
+  get isCan() { return this.protocol != null && this.protocol >= 6 && this.protocol <= 9; }
+
+  _onData(chunk) {
+    this.buf += chunk.replace(/\0/g, '');
+    let i;
+    while ((i = this.buf.indexOf('>')) !== -1) {
+      const raw = this.buf.slice(0, i);
+      this.buf = this.buf.slice(i + 1);
+      if (this.pending) {
+        const p = this.pending; this.pending = null;
+        clearTimeout(p.timer); p.resolve(raw);
+      } else if (raw.trim()) {
+        Log.add('warn', `Réponse tardive ignorée : ${raw.trim().replace(/[\r\n]+/g, ' ⏎ ')}`);
+      }
+    }
+  }
+
+  /** Rejette la commande en cours (perte de liaison). */
+  abort(reason = 'Liaison interrompue') {
+    if (this.pending) {
+      const p = this.pending; this.pending = null;
+      clearTimeout(p.timer); p.reject(new ElmError('ABORTED', reason));
+    }
+  }
+
+  _clean(raw, cmd) {
+    const c = cmd.replace(/\s/g, '').toUpperCase();
+    return raw.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean)
+      .filter((l, i) => !(i === 0 && l.replace(/\s/g, '').toUpperCase() === c))   // écho résiduel
+      .filter((l) => !/^SEARCHING/i.test(l) && !/^BUS INIT:\s*\.*\s*(OK)?$/i.test(l));
+  }
+
+  /** Envoie une commande et attend le prompt « > ». Les commandes sont strictement sérialisées. */
+  send(cmd, { timeout = 2500, live = false } = {}) {
+    const job = async () => {
+      if (this.dirty) { await sleep(300); this.dirty = false; } // laisse passer une éventuelle réponse tardive
+      this.buf = '';
+      const raw = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.pending = null; this.dirty = true;
+          reject(new ElmError('TIMEOUT', `Pas de réponse à « ${cmd} » après ${timeout} ms`));
+        }, timeout);
+        this.pending = { resolve, reject, timer };
+        Log.add('tx', cmd, { live });
+        Promise.resolve(this.t.write(cmd + '\r')).catch((err) => {
+          clearTimeout(timer); this.pending = null; reject(err);
+        });
+      });
+      const lines = this._clean(raw, cmd);
+      Log.add('rx', lines.join(' ⏎ ') || '(vide)', { live });
+      for (const line of lines) {
+        const hit = ELM_ERRORS.find(([re]) => re.test(line.toUpperCase()));
+        if (hit) throw new ElmError(hit[1], `${cmd} → ${hit[2]} (${line})`);
+      }
+      return lines;
+    };
+    const p = this.chain.then(job, job);
+    this.chain = p.catch(() => {});
+    return p;
+  }
+
+  async initialize(progress = () => {}) {
+    progress('Réinitialisation de l\'adaptateur (ATZ)…');
+    let reset;
+    try { reset = await this.send('ATZ', { timeout: 5000 }); }
+    catch (e) {
+      if (e.code !== 'TIMEOUT') throw e;
+      Log.add('warn', 'ATZ sans réponse, nouvelle tentative…');
+      reset = await this.send('ATZ', { timeout: 6000 });
+    }
+    this.version = reset.find((l) => /ELM|v\d/i.test(l)) || '';
+
+    const steps = [
+      ['ATE0', 'Écho désactivé'],
+      ['ATL0', 'Sauts de ligne désactivés'],
+      ['ATS0', 'Espaces désactivés'],
+      ['ATH1', 'En-têtes activés'],
+      ['ATSP0', 'Protocole automatique'],
+    ];
+    for (const [cmd, label] of steps) {
+      progress(`${cmd} — ${label}`);
+      const r = await this.send(cmd);
+      if (!r.some((l) => /OK/i.test(l))) Log.add('warn', `${cmd} : réponse inattendue « ${r.join(' ')} »`);
+      else Log.add('info', `${cmd} : ${label}`);
+    }
+    try { const r = await this.send('ATI'); if (r[0]) this.version = r[0]; } catch { /* facultatif */ }
+    if (/v2\.[1-9]/i.test(this.version)) Log.add('warn', `Version annoncée « ${this.version} » : souvent un clone, certaines commandes peuvent manquer.`);
+  }
+
+  async readProtocol() {
+    try {
+      const dpn = ((await this.send('ATDPN'))[0] || '').trim().toUpperCase();
+      const code = dpn.length === 2 && dpn[0] === 'A' ? dpn[1] : dpn;
+      const n = parseInt(code, 16);
+      this.protocol = Number.isNaN(n) ? null : n;
+    } catch (e) { Log.add('warn', `ATDPN : ${e.message}`); }
+    try { this.protocolDesc = (await this.send('ATDP'))[0] || ''; } catch { /* facultatif */ }
+  }
+
+  /** Premier échange avec le calculateur : détection du protocole + PIDs supportés. */
+  async detectVehicle(progress = () => {}) {
+    progress('Recherche du protocole véhicule (0100)… peut prendre 10 s');
+    this.vehicleOk = false;
+    const lines = await this.send('0100', { timeout: 15000 });
+    await this.readProtocol();
+    this.supported = new Set();
+    this._addSupport(lines, 0x00);
+    if (this.supported.has(0x20)) {
+      try { this._addSupport(await this.send('0120', { timeout: 4000 }), 0x20); }
+      catch (e) { Log.add('warn', `0120 : ${e.message}`); }
+    }
+    this.vehicleOk = true;
+    Log.add('ok', `Protocole : ${this.protocolDesc || this.protocol} — ${this.supported.size} PIDs mode 01 supportés`);
+  }
+
+  _addSupport(lines, base) {
+    for (const m of parseResponse(lines, this.protocol)) {
+      const d = m.data;
+      if (d[0] !== 0x41 || d[1] !== base || d.length < 6) continue;
+      for (let i = 0; i < 32; i++) if (d[2 + (i >> 3)] & (0x80 >> (i & 7))) this.supported.add(base + i + 1);
+    }
+  }
+
+  supports(pid) { return !this.supported || this.supported.size === 0 || this.supported.has(pid); }
+
+  /** Lit un PID du mode 01 et renvoie les octets de données (A, B, …). */
+  async readPid(pid, { live = false } = {}) {
+    const hx = hex2(pid);
+    const fast = this.fast && this.isCan;
+    let lines;
+    try {
+      lines = await this.send(`01${hx}${fast ? '1' : ''}`, { live, timeout: 2000 });
+    } catch (e) {
+      if (fast && e.code === 'UNKNOWN_CMD') {
+        this.fast = false;
+        Log.add('warn', 'Requêtes rapides non supportées par l\'adaptateur : désactivées.');
+        lines = await this.send(`01${hx}`, { live, timeout: 2000 });
+      } else throw e;
+    }
+    const msgs = parseResponse(lines, this.protocol);
+    if (msgs.some((m) => m.data[0] === 0x7f)) throw new ElmError('NO_DATA', `01${hx} → réponse négative du calculateur`);
+    const m = pickEcm(msgs.filter((x) => x.data[0] === 0x41 && x.data[1] === pid));
+    if (!m) throw new ElmError('BAD_RESPONSE', `Réponse illisible pour 01${hx} : ${lines.join(' ')}`);
+    return m.data.slice(2);
+  }
+
+  async readVoltage() {
+    const r = await this.send('ATRV', { live: true });
+    const v = parseFloat((r[0] || '').replace(',', '.'));
+    return Number.isNaN(v) ? null : v;
+  }
+
+  /** Mode 03 (confirmés), 07 (en attente) ou 0A (permanents). */
+  async readDtcs(mode) {
+    const respMode = 0x40 + parseInt(mode, 16);
+    let lines;
+    try { lines = await this.send(mode, { timeout: 8000 }); }
+    catch (e) { if (e.code === 'NO_DATA') return []; throw e; }
+    const out = []; const seen = new Set();
+    for (const m of parseResponse(lines, this.protocol)) {
+      if (m.data[0] !== respMode) continue;
+      // CAN : [43, nb, a, b, …] — K-Line : [43, a, b, a, b, a, b] par trame
+      for (let i = this.isCan || this.protocol == null ? 2 : 1; i + 1 < m.data.length; i += 2) {
+        const a = m.data[i], b = m.data[i + 1];
+        if (!a && !b) continue;
+        const code = decodeDtc(a, b);
+        const key = code + (m.header || '');
+        if (!seen.has(key)) { seen.add(key); out.push({ code, ecu: m.header }); }
+      }
+    }
+    return out;
+  }
+
+  async clearDtcs() {
+    const lines = await this.send('04', { timeout: 8000 });
+    const msgs = parseResponse(lines, this.protocol);
+    const neg = msgs.find((m) => m.data[0] === 0x7f && m.data[1] === 0x04);
+    if (neg) {
+      const nrc = neg.data[2];
+      throw new ElmError('REFUSED', nrc === 0x22
+        ? 'Effacement refusé : conditions non remplies (coupez le moteur, laissez le contact mis).'
+        : `Effacement refusé par le calculateur (code 0x${hex2(nrc ?? 0)}).`);
+    }
+    if (!msgs.some((m) => m.data[0] === 0x44)) throw new ElmError('BAD_RESPONSE', `Réponse inattendue : ${lines.join(' ')}`);
+    return msgs.filter((m) => m.data[0] === 0x44).map((m) => m.header);
+  }
+}
+
+/* =====================================================================
+ * Moteur d'analyse (règles comparant les mesures au profil)
+ * ===================================================================== */
+const RULES = [
+  { id: 'idle', title: 'Régime de ralenti', icon: 'gauge' },
+  { id: 'mapIdle', title: 'Pression d\'admission à faible charge', icon: 'wind' },
+  { id: 'boost', title: 'Suralimentation en charge', icon: 'trending-up' },
+  { id: 'collapse', title: 'Stabilité de la pression MAP', icon: 'trending-down' },
+  { id: 'overboost', title: 'Surpression turbo', icon: 'octagon-alert' },
+  { id: 'coolant', title: 'Température moteur', icon: 'thermometer' },
+];
+const RANK = { alert: 4, warn: 3, info: 1, ok: 1, wait: 0, na: 0 };
+const STATUS_STYLE = {
+  ok: { label: 'OK', chip: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300', ring: 'border-emerald-500/30', icon: 'circle-check', text: 'text-emerald-300' },
+  info: { label: 'INFO', chip: 'border-sky-500/40 bg-sky-500/10 text-sky-300', ring: 'border-sky-500/30', icon: 'info', text: 'text-sky-300' },
+  warn: { label: 'ATTENTION', chip: 'border-amber-500/40 bg-amber-500/10 text-amber-300', ring: 'border-amber-500/50', icon: 'triangle-alert', text: 'text-amber-300' },
+  alert: { label: 'ANOMALIE', chip: 'border-red-500/50 bg-red-500/15 text-red-300', ring: 'border-red-500/60', icon: 'octagon-alert', text: 'text-red-300' },
+  wait: { label: 'EN ATTENTE', chip: 'border-zinc-700 bg-zinc-800/60 text-zinc-400', ring: 'border-zinc-800', icon: 'hourglass', text: 'text-zinc-400' },
+  na: { label: 'N/A', chip: 'border-zinc-800 bg-zinc-900 text-zinc-500', ring: 'border-zinc-800', icon: 'circle-minus', text: 'text-zinc-500' },
+};
+
+class Analyzer {
+  constructor() { this.reset(); }
+
+  reset() {
+    this.samples = [];
+    this.results = {};
+    for (const r of RULES) this.results[r.id] = { status: 'wait', value: '—', message: 'En attente de données…', hint: '' };
+    this.latched = {};
+    this.loadSince = null;
+    this.runningSince = null;
+    this.maxMap = null;
+    this.history = [];
+    this.ctx = { highLoad: false, rpmRate: 0, loadHeld: 0 };
+  }
+
+  push(sample, profile, baro) {
+    this.samples.push(sample);
+    const cutoff = sample.t - 30000;
+    while (this.samples.length && this.samples[0].t < cutoff) this.samples.shift();
+    this.evaluate(profile, baro);
+  }
+
+  _win(sec) { const now = this.samples.at(-1).t; return this.samples.filter((x) => x.t >= now - sec * 1000); }
+
+  evaluate(p, baro) {
+    const s = this.samples.at(-1);
+    if (!s || s.rpm == null) return;
+    const now = s.t;
+    const turbo = p.aspiration === 'turbo';
+    const diesel = p.fuel === 'diesel';
+    const running = s.rpm > 400;
+
+    if (running) this.runningSince ??= now; else this.runningSince = null;
+    const runMin = this.runningSince ? (now - this.runningSince) / 60000 : 0;
+    if (running && s.map != null) this.maxMap = Math.max(this.maxMap ?? 0, s.map);
+
+    const w1 = this._win(1);
+    const rpmRate = w1.length > 1 ? ((s.rpm - w1[0].rpm) / Math.max(0.1, (s.t - w1[0].t) / 1000)) : 0;
+    const highLoad = running && (s.load != null ? s.load >= p.map.loadThreshold : rpmRate > 250 && (s.speed ?? 0) > 5);
+    if (highLoad) this.loadSince ??= now; else this.loadSince = null;
+    const loadHeld = this.loadSince ? (now - this.loadSince) / 1000 : 0;
+    this.ctx = { highLoad, rpmRate, loadHeld };
+
+    const idling = running && (s.speed ?? 0) < 2 && s.rpm < p.idle.max + 400 && (s.load ?? 0) < 45;
+    const R = {};
+
+    /* ---- 1. Ralenti ---- */
+    if (!running) R.idle = { status: 'wait', value: 'Moteur arrêté', message: 'Démarrez le moteur pour analyser le ralenti.' };
+    else if (idling) {
+      const w = this._win(5).filter((x) => x.rpm > 400 && (x.speed ?? 0) < 2 && x.rpm < p.idle.max + 400);
+      if (w.length >= 6) {
+        const avg = mean(w.map((x) => x.rpm)), sd = stdev(w.map((x) => x.rpm));
+        const value = `${fmtNum(avg)} tr/min · σ ${fmtNum(sd)}`;
+        const cold = s.ect != null && s.ect < p.coolant.warmMin;
+        if (cold && avg <= p.idle.max + 350) R.idle = { status: 'info', value, message: `Moteur froid (${fmtNum(s.ect)} °C) : ralenti accéléré normal.` };
+        else if (avg < p.idle.min - 40) R.idle = { status: 'warn', value, message: 'Ralenti trop bas.',
+          hint: diesel ? 'Injecteurs (débit / retour), filtre à gazole colmaté, compressions, consommateurs électriques.' : 'Prise d\'air, papillon encrassé, bougies / bobines, capteur de température.' };
+        else if (avg > p.idle.max + 40) R.idle = { status: 'warn', value, message: 'Ralenti trop haut.',
+          hint: diesel ? 'Régénération du FAP en cours ?, consommateurs (clim, dégivrage), sonde de température d\'eau, prise d\'air.' : 'Prise d\'air, régulation de ralenti, sonde de température d\'eau.' };
+        else if (sd > p.idle.stability * 1.8) R.idle = { status: 'alert', value, message: 'Ralenti très instable.',
+          hint: diesel ? 'Équilibrage injecteurs (fuite retour), prise d\'air gazole, EGR qui ne se referme pas, support moteur.' : 'Ratés de combustion, bougies / bobines, prise d\'air, injecteur.' };
+        else if (sd > p.idle.stability) R.idle = { status: 'warn', value, message: 'Ralenti légèrement instable.',
+          hint: diesel ? 'Surveiller l\'équilibrage des injecteurs et l\'EGR.' : 'Vérifier bougies et prises d\'air.' };
+        else R.idle = { status: 'ok', value, message: 'Ralenti stable et dans la plage constructeur.' };
+      } else R.idle = { status: 'wait', value: `${fmtNum(s.rpm)} tr/min`, message: 'Mesure du ralenti en cours…' };
+    }
+
+    /* ---- 2. MAP à faible charge (ou contact mis moteur arrêté) ---- */
+    if (s.map != null) {
+      if (!running && state.baroSource === 'pid') {
+        const diff = s.map - baro;
+        R.mapIdle = Math.abs(diff) <= 6
+          ? { status: 'ok', value: `${fmtNum(s.map)} kPa (baro ${fmtNum(baro)})`, message: 'Moteur arrêté : capteur MAP cohérent avec la pression atmosphérique.' }
+          : { status: 'warn', value: `${fmtNum(s.map)} kPa (baro ${fmtNum(baro)})`, message: `Moteur arrêté : écart de ${fmtNum(diff)} kPa entre MAP et pression atmosphérique.`, hint: 'Capteur MAP défectueux ou encrassé, connectique, tuyau de prise de pression.' };
+      } else if (idling) {
+        const w = this._win(3).filter((x) => x.map != null && (x.speed ?? 0) < 2);
+        if (w.length >= 4) {
+          const m = mean(w.map((x) => x.map));
+          if (p.map.idleRef === 'baro') {
+            const d = m - baro;
+            const value = `${fmtNum(m)} kPa (${d >= 0 ? '+' : ''}${fmtNum(d)} vs atmo)`;
+            if (d > p.map.idleMax) R.mapIdle = { status: 'warn', value, message: 'Pression d\'admission trop élevée au ralenti.',
+              hint: 'Géométrie variable du turbo bloquée en position fermée, capteur MAP dérivé, échappement / FAP colmaté.' };
+            else if (d < p.map.idleMin) R.mapIdle = { status: 'warn', value, message: 'Pression d\'admission sous la pression atmosphérique au ralenti.',
+              hint: 'Filtre à air colmaté, volet d\'admission (doseur) bloqué, capteur MAP dérivé.' };
+            else R.mapIdle = { status: 'ok', value, message: 'Pression au ralenti cohérente (proche de la pression atmosphérique).' };
+          } else {
+            const value = `${fmtNum(m)} kPa abs.`;
+            if (m > p.map.idleMax) R.mapIdle = { status: 'warn', value, message: 'Dépression insuffisante au ralenti.',
+              hint: 'Prise d\'air (durite de dépression, servofrein, joint de collecteur), papillon encrassé, calage distribution, capteur MAP.' };
+            else if (m < p.map.idleMin) R.mapIdle = { status: 'warn', value, message: 'Dépression anormalement forte au ralenti.', hint: 'Vérifier le capteur MAP et le papillon.' };
+            else R.mapIdle = { status: 'ok', value, message: 'Dépression au ralenti normale.' };
+          }
+        }
+      }
+    }
+
+    /* ---- 3. Suralimentation en charge ---- */
+    if (!turbo) R.boost = { status: 'na', value: '—', message: 'Non applicable (moteur atmosphérique).' };
+    else if (highLoad && loadHeld >= 1.2 && s.map != null && p.map.curve.length && s.rpm >= Math.max(1500, p.map.curve[0][0]) && s.rpm <= p.redline) {
+      const w = this._win(0.8).filter((x) => x.map != null);
+      const m = mean(w.map((x) => x.map)), r = mean(w.map((x) => x.rpm));
+      const exp = interp(p.map.curve, r);
+      const ratio = (m - baro) / Math.max(1, exp - baro);
+      const value = `${fmtNum(m)} kPa · attendu ≈ ${fmtNum(exp)} à ${fmtNum(r)} tr/min (${fmtNum(ratio * 100)} %)`;
+      if (m - baro < 25 && r >= 1800) R.boost = { status: 'alert', value, message: 'La pression MAP stagne : le turbo ne charge pas.',
+        hint: 'Géométrie variable grippée / actionneur de turbo, électrovanne de régulation, durite d\'air percée ou déboîtée, EGR bloquée ouverte, turbo défectueux.' };
+      else if (ratio < 0.65) R.boost = { status: 'alert', value, message: `Sous-pression importante : ${fmtNum(ratio * 100)} % de la suralimentation attendue.`,
+        hint: 'Fuite d\'air (durites, échangeur / intercooler, colliers), géométrie variable encrassée, électrovanne de régulation, capteur MAP, FAP colmaté (P0299).' };
+      else if (ratio < 0.82) R.boost = { status: 'warn', value, message: 'Légère sous-pression en charge.',
+        hint: 'Début de fuite d\'air, géométrie variable encrassée, filtre à air. Refaire le test moteur bien chaud.' };
+      else R.boost = { status: 'ok', value, message: 'Pression de suralimentation conforme à la courbe du profil.' };
+    }
+
+    /* ---- 4. Chute brutale de pression ---- */
+    if (!turbo) R.collapse = { status: 'na', value: '—', message: 'Non applicable (moteur atmosphérique).' };
+    else if (highLoad && loadHeld >= 1.0 && s.rpm >= 1500 && s.map != null) {
+      const w = this._win(1.6).filter((x) => x.map != null);
+      const peak = Math.max(...w.map((x) => x.map));
+      const minRpm = Math.min(...w.map((x) => x.rpm));
+      const drop = peak - s.map;
+      if (drop >= p.map.collapseDrop && s.rpm >= minRpm - 100) {
+        R.collapse = { status: 'alert', value: `−${fmtNum(drop)} kPa à ${fmtNum(s.rpm)} tr/min`,
+          message: 'Chute de pression MAP détectée - Vérifier fuite d\'air / durite / géométrie turbo',
+          hint: 'Durite d\'intercooler qui se déboîte sous pression, collier desserré, échangeur percé, géométrie variable qui décroche, mise en sécurité (mode dégradé).' };
+      } else R.collapse = { status: 'ok', value: `Variation max ${fmtNum(Math.max(0, drop))} kPa`, message: 'Pression stable pendant l\'accélération.' };
+    }
+
+    /* ---- 5. Surpression ---- */
+    if (!turbo) R.overboost = { status: 'na', value: '—', message: 'Non applicable (moteur atmosphérique).' };
+    else if (running && s.map != null) {
+      const w = this._win(1).filter((x) => x.map != null);
+      const over = w.length >= 2 && w.every((x) => x.map > p.map.max);
+      R.overboost = over
+        ? { status: 'alert', value: `${fmtNum(s.map)} kPa (max ${p.map.max})`, message: 'Surpression de suralimentation (overboost).',
+            hint: 'Géométrie variable bloquée en position fermée, actionneur / électrovanne de régulation, capteur MAP. Rappel : le PID 010B plafonne à 255 kPa.' }
+        : { status: 'ok', value: `Max observé ${fmtNum(this.maxMap)} kPa`, message: `Pression sous le seuil de ${p.map.max} kPa.` };
+    }
+
+    /* ---- 6. Température moteur ---- */
+    if (s.ect != null) {
+      const value = `${fmtNum(s.ect)} °C`;
+      if (s.ect >= p.coolant.alarm) R.coolant = { status: 'alert', value, message: 'Surchauffe moteur ! Arrêtez le moteur.',
+        hint: 'Niveau de liquide, motoventilateur, pompe à eau, thermostat bloqué fermé, joint de culasse.' };
+      else if (s.ect > p.coolant.normalMax) R.coolant = { status: 'warn', value, message: 'Température élevée.',
+        hint: 'Vérifier le déclenchement du motoventilateur, le niveau et l\'état du radiateur.' };
+      else if (s.ect < p.coolant.warmMin) R.coolant = running && runMin >= 15
+        ? { status: 'warn', value, message: 'Le moteur n\'atteint pas sa température de fonctionnement.', hint: 'Thermostat bloqué ouvert (P0128), sonde de température.' }
+        : { status: 'info', value, message: `Moteur en chauffe (fonctionnement normal à partir de ${p.coolant.warmMin} °C).` };
+      else R.coolant = { status: 'ok', value, message: 'Température de fonctionnement normale.' };
+    }
+
+    /* ---- Fusion : maintien des alertes 12 s, conservation des dernières mesures ---- */
+    for (const { id } of RULES) {
+      let r = R[id];
+      const prev = this.results[id];
+      const latch = this.latched[id];
+      if (latch && now < latch.until && (!r || RANK[r.status] < RANK[latch.r.status])) r = { ...latch.r, latched: true };
+      if (!r) {
+        if (prev.status === 'wait' || prev.status === 'na') continue;
+        r = prev.stale ? prev : { ...prev, stale: true };
+      } else if ((r.status === 'warn' || r.status === 'alert') && !r.latched) {
+        this.latched[id] = { until: now + 12000, r };
+        this._record(id, r);
+      }
+      this.results[id] = r;
+    }
+  }
+
+  /** Un épisode = une entrée d'historique (regroupe les détections rapprochées < 20 s). */
+  _record(id, r) {
+    const last = this.history.find((h) => h.id === id);
+    if (last && last.status === r.status && Date.now() - last.seen < 20000) {
+      Object.assign(last, { seen: Date.now(), message: r.message, value: r.value });
+      return;
+    }
+    const rule = RULES.find((x) => x.id === id);
+    this.history.unshift({ id, time: Date.now(), seen: Date.now(), title: rule.title, status: r.status, message: r.message, value: r.value });
+    this.history = this.history.slice(0, 80);
+    Log.add(r.status === 'alert' ? 'error' : 'warn', `Diagnostic · ${rule.title} : ${r.message} (${r.value})`);
+  }
+
+  overall() {
+    const list = Object.values(this.results);
+    const worst = list.reduce((a, r) => (RANK[r.status] > RANK[a] ? r.status : a), 'wait');
+    if (worst === 'wait' && list.some((r) => r.status === 'ok' || r.status === 'info')) return 'ok';
+    return worst === 'info' ? 'ok' : worst;
+  }
+}
+
+/* =====================================================================
+ * Test guidé d'accélération
+ * ===================================================================== */
+const AccelTest = {
+  state: 'idle', points: [], startT: 0, result: null,
+
+  start() {
+    if (!state.elm) { toast('Connectez d\'abord l\'adaptateur.', 'warn'); return; }
+    if (state.profile.aspiration !== 'turbo') { toast('Test réservé aux moteurs turbo.', 'warn'); return; }
+    this.state = 'armed'; this.points = []; this.result = null;
+    if (!state.live) startLive();
+    Log.add('info', 'Test d\'accélération armé : en attente de la mise en charge.');
+    renderAccel();
+  },
+  cancel() { this.state = 'idle'; this.points = []; renderAccel(); },
+
+  feed(s, p, baro, ctx) {
+    if (this.state === 'armed') {
+      const loadOk = s.load != null ? s.load >= p.map.loadThreshold : ctx.rpmRate > 250;
+      if (s.rpm > 900 && s.rpm < 2300 && loadOk) {
+        this.state = 'recording'; this.startT = s.t; this.points = [];
+        Log.add('info', `Enregistrement du test démarré à ${fmtNum(s.rpm)} tr/min.`);
+      }
+    }
+    if (this.state === 'recording') {
+      const dur = (s.t - this.startT) / 1000;
+      const peakRpm = Math.max(0, ...this.points.map((x) => x.rpm));
+      // Pied levé : charge retombée (ou, sans PID de charge, régime qui redescend).
+      const released = s.load != null ? s.load < p.map.loadThreshold - 15 : s.rpm < peakRpm - 200;
+      if (dur > 1 && released) { this.finish(p, baro); return; }
+      if (s.map != null) this.points.push({ rpm: s.rpm, map: s.map, t: s.t, load: s.load });
+      if (s.rpm >= Math.min(3400, p.redline - 300) || dur > 15) this.finish(p, baro);
+    }
+  },
+
+  finish(p, baro) {
+    const pts = this.points.filter((x) => x.rpm >= 1500 && x.rpm <= p.redline);
+    let res;
+    if (pts.length < 4) {
+      res = { status: 'warn', title: 'Mesure insuffisante', lines: ['Trop peu de points en charge au-dessus de 1 500 tr/min. Recommencez en accélérant franchement et plus longtemps.'] };
+    } else {
+      const ratios = pts.map((x) => (x.map - baro) / Math.max(1, interp(p.map.curve, x.rpm) - baro));
+      const meanRatio = mean(ratios);
+      const near2000 = pts.filter((x) => Math.abs(x.rpm - 2000) <= 200);
+      const mapAt2000 = near2000.length ? mean(near2000.map((x) => x.map)) : null;
+      const maxMap = Math.max(...pts.map((x) => x.map));
+      let collapse = null, peak = -Infinity;
+      for (const x of this.points) {
+        peak = Math.max(peak, x.map);
+        if (x.rpm >= 1500 && peak - x.map >= p.map.collapseDrop && !collapse) collapse = { rpm: x.rpm, drop: peak - x.map };
+      }
+      const lines = [
+        `MAP maximale : <b>${fmtNum(maxMap)} kPa</b> (${fmtNum((maxMap - baro) / 100, 2)} bar relatifs)`,
+        mapAt2000 != null ? `MAP vers 2 000 tr/min : <b>${fmtNum(mapAt2000)} kPa</b> (attendu ≈ ${fmtNum(interp(p.map.curve, 2000))})` : 'Pas de mesure autour de 2 000 tr/min.',
+        `Suralimentation moyenne : <b>${fmtNum(meanRatio * 100)} %</b> de la courbe attendue`,
+      ];
+      if (collapse) {
+        lines.push(`Chute de ${fmtNum(collapse.drop)} kPa vers ${fmtNum(collapse.rpm)} tr/min`);
+        res = { status: 'alert', title: 'Chute de pression MAP détectée - Vérifier fuite d\'air / durite / géométrie turbo', lines };
+      } else if (meanRatio < 0.65 || (mapAt2000 != null && mapAt2000 - baro < 25)) {
+        res = { status: 'alert', title: 'Sous-pression importante : fuite d\'air, géométrie variable grippée ou régulation turbo', lines };
+      } else if (meanRatio < 0.82) {
+        res = { status: 'warn', title: 'Légère sous-pression : à surveiller (fuite naissante, géométrie encrassée)', lines };
+      } else {
+        res = { status: 'ok', title: 'Montée en pression conforme au profil', lines };
+      }
+    }
+    this.result = res;
+    this.state = 'done';
+    Log.add(res.status === 'alert' ? 'error' : res.status === 'warn' ? 'warn' : 'ok', `Test d'accélération : ${res.title}`);
+    renderAccel();
+    if (res.status === 'alert') toast(res.title, 'error');
+  },
+};
+
+/* =====================================================================
+ * État global de l'application
+ * ===================================================================== */
+const state = {
+  profile: null,
+  transport: null, lastTransport: null, elm: null,
+  conn: 'disconnected', busy: false, manualDisconnect: false,
+  deviceName: '',
+  live: false, livePromise: null, wakeLock: null,
+  values: { rpm: null, map: null, ect: null, speed: null, load: null, volt: null, baro: null },
+  baroSource: 'défaut',
+  hist: {}, minmax: {},
+  noData: {}, disabledPids: new Set(),
+  rate: 0, renderQueued: false,
+  dtc: { stored: null, pending: null, mil: null, at: null },
+};
+const analyzer = new Analyzer();
+
+const PID_DEFS = {
+  0x04: { key: 'load', decode: (d) => (d[0] * 100) / 255 },
+  0x05: { key: 'ect', decode: (d) => d[0] - 40 },
+  0x0B: { key: 'map', decode: (d) => d[0] },
+  0x0C: { key: 'rpm', decode: (d) => (d[0] * 256 + d[1]) / 4 },
+  0x0D: { key: 'speed', decode: (d) => d[0] },
+  0x33: { key: 'baro', decode: (d) => d[0] },
+};
+
+const currentBaro = () => state.values.baro ?? 101;
+
+/* =====================================================================
+ * Connexion / déconnexion
+ * ===================================================================== */
+const CONN_STYLE = {
+  disconnected: { label: 'Déconnecté', dot: 'bg-zinc-500', pill: 'border-zinc-700 bg-zinc-900 text-zinc-300', icon: 'bluetooth-off', iconBox: 'bg-zinc-800 text-zinc-400' },
+  connecting: { label: 'Connexion…', dot: 'bg-amber-400 animate-pulse', pill: 'border-amber-500/40 bg-amber-500/10 text-amber-300', icon: 'bluetooth-searching', iconBox: 'bg-amber-500/15 text-amber-300' },
+  initializing: { label: 'Initialisation…', dot: 'bg-amber-400 animate-pulse', pill: 'border-amber-500/40 bg-amber-500/10 text-amber-300', icon: 'loader-circle', iconBox: 'bg-amber-500/15 text-amber-300' },
+  connected: { label: 'Connecté', dot: 'bg-emerald-400', pill: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300', icon: 'bluetooth-connected', iconBox: 'bg-emerald-500/15 text-emerald-300' },
+  nocar: { label: 'Adaptateur seul', dot: 'bg-amber-400', pill: 'border-amber-500/40 bg-amber-500/10 text-amber-300', icon: 'unplug', iconBox: 'bg-amber-500/15 text-amber-300' },
+  error: { label: 'Erreur', dot: 'bg-red-500', pill: 'border-red-500/50 bg-red-500/10 text-red-300', icon: 'circle-x', iconBox: 'bg-red-500/15 text-red-300' },
+};
+
+function setConnState(conn, detail) {
+  state.conn = conn;
+  const st = CONN_STYLE[conn];
+  const pill = $('#conn-pill');
+  pill.className = `chip ${st.pill}`;
+  pill.querySelector('[data-dot]').className = `h-2 w-2 rounded-full ${st.dot}`;
+  pill.querySelector('[data-label]').textContent = st.label;
+  $('#conn-title').textContent = st.label + (state.deviceName && conn !== 'disconnected' ? ` — ${state.deviceName}` : '');
+  if (detail !== undefined) setConnDetail(detail);
+  const box = $('#conn-icon');
+  box.className = `grid h-11 w-11 place-items-center rounded-xl ${st.iconBox}`;
+  box.innerHTML = `<i data-lucide="${st.icon}" class="h-5 w-5 ${conn === 'initializing' ? 'spin' : ''}"></i>`;
+  updateButtons();
+  refreshIcons();
+}
+const setConnDetail = (txt) => { $('#conn-detail').textContent = txt; };
+
+function updateButtons() {
+  const linked = !!state.elm && (state.conn === 'connected' || state.conn === 'nocar');
+  const working = state.conn === 'connecting' || state.conn === 'initializing';
+  for (const btn of [$('#btn-connect'), $('#btn-connect-2')]) {
+    const big = btn.id === 'btn-connect-2';
+    btn.disabled = working;
+    if (working) {
+      btn.className = `btn btn-ghost ${big ? 'flex-1' : ''}`;
+      btn.innerHTML = `<i data-lucide="loader-circle" class="h-4 w-4 spin"></i><span class="${big ? '' : 'hidden sm:inline'}">Connexion…</span>`;
+    } else if (linked) {
+      btn.className = `btn btn-ghost ${big ? 'flex-1' : ''}`;
+      btn.innerHTML = `<i data-lucide="unplug" class="h-4 w-4"></i><span class="${big ? '' : 'hidden sm:inline'}">Déconnecter</span>`;
+    } else {
+      btn.className = `btn btn-primary ${big ? 'flex-1' : ''}`;
+      btn.innerHTML = `<i data-lucide="bluetooth-searching" class="h-4 w-4"></i><span class="${big ? '' : 'hidden sm:inline'}">Connecter l'adaptateur OBD</span>`;
+    }
+  }
+  $('#btn-reconnect').classList.toggle('hidden', !(state.lastTransport && !linked && !working));
+  $('#btn-live').disabled = !linked;
+  $('#btn-dtc-scan').disabled = !linked;
+  $('#btn-dtc-clear').disabled = !linked;
+  $('#live-hint').textContent = linked
+    ? (state.live ? 'Lecture en boucle active — RPM, MAP, vitesse et charge à chaque cycle, température toutes les 6 trames.' : 'Prêt : démarrez la lecture en boucle.')
+    : 'Connectez l\'adaptateur puis démarrez la lecture en boucle.';
+  refreshIcons();
+}
+
+function explainError(e, transport) {
+  const name = e?.name || '', msg = e?.message || String(e);
+  if (name === 'NotFoundError') {
+    if (/cancel/i.test(msg) || !transport?.device) return { level: 'info', text: 'Sélection annulée : aucun appareil choisi.' };
+    return { level: 'error', text: 'Aucun service compatible sur cet appareil. Adaptateur Bluetooth classique (non BLE) ? Essayez « Afficher tous les appareils ».' };
+  }
+  if (name === 'SecurityError') return { level: 'error', text: 'Accès Bluetooth refusé : la page doit être servie en HTTPS ou sur localhost, et l\'autorisation accordée.' };
+  if (name === 'NetworkError') return { level: 'error', text: 'Connexion GATT impossible : adaptateur hors de portée, non alimenté (contact coupé) ou déjà connecté à un autre téléphone / une autre application.' };
+  if (name === 'NotSupportedError') return { level: 'error', text: `Opération Bluetooth non supportée par cet appareil : ${msg}` };
+  if (name === 'InvalidStateError') return { level: 'error', text: `État Bluetooth invalide : ${msg}` };
+  if (e instanceof TransportError) return { level: 'error', text: msg };
+  if (e instanceof ElmError && e.code === 'TIMEOUT') return { level: 'error', text: `L'adaptateur ne répond pas aux commandes AT (${msg}). Est-ce bien un ELM327 alimenté ?` };
+  return { level: 'error', text: `${name ? name + ' : ' : ''}${msg}` };
+}
+
+async function connectAdapter({ reuse = false } = {}) {
+  if (state.busy) return;
+  const sim = $('#opt-sim').checked && !reuse;
+  if (!sim && !reuse) {
+    if (!('bluetooth' in navigator)) {
+      const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const text = ios
+        ? 'Web Bluetooth n\'est pas disponible sur Safari iOS : utilisez le navigateur Bluefy.'
+        : 'Web Bluetooth indisponible : utilisez Chrome ou Edge (HTTPS ou localhost), ou activez le mode démo.';
+      Log.add('error', text); toast(text, 'error');
+      return;
+    }
+    if (!window.isSecureContext) Log.add('warn', 'Contexte non sécurisé : servez la page en HTTPS ou via http://localhost.');
+    try {
+      if (navigator.bluetooth.getAvailability && !(await navigator.bluetooth.getAvailability())) {
+        Log.add('warn', 'Le Bluetooth semble désactivé ou absent sur cet appareil.');
+      }
+    } catch { /* API facultative */ }
+  }
+
+  state.busy = true;
+  const transport = reuse ? state.lastTransport : sim
+    ? new SimTransport({ leak: $('#opt-sim-leak').checked })
+    : new BleTransport({ acceptAll: $('#opt-all-devices').checked });
+  transport.onDisconnect = onTransportLost;
+  setConnState('connecting', sim ? 'Démarrage du simulateur…' : reuse ? 'Reconnexion…' : 'Choisissez votre adaptateur dans la fenêtre du navigateur…');
+
+  try {
+    const info = reuse ? await transport.reconnect() : await transport.connect();
+    state.transport = transport;
+    state.lastTransport = transport.kind === 'ble' ? transport : null;
+    state.deviceName = info.name;
+    Log.add('ok', `Liaison établie avec « ${info.name} ».`);
+
+    setConnState('initializing', 'Initialisation de l\'ELM327…');
+    const elm = new ELM327(transport);
+    elm.fast = $('#opt-fast').checked;
+    state.elm = elm;
+    await elm.initialize(setConnDetail);
+    Log.add('ok', `Adaptateur initialisé : ${elm.version || 'version inconnue'}`);
+    await updateVoltage();
+
+    try {
+      await elm.detectVehicle(setConnDetail);
+      setConnState('connected', `${elm.protocolDesc || 'Protocole détecté'} · ${elm.version}`);
+      toast('Connecté au véhicule.', 'ok');
+    } catch (e) {
+      Log.add('warn', `Adaptateur prêt mais pas de dialogue avec le calculateur : ${e.message}`);
+      setConnState('nocar', 'Adaptateur prêt — aucune réponse du véhicule (contact mis ?).');
+      toast('Adaptateur connecté, mais le véhicule ne répond pas. Mettez le contact puis lancez le Live.', 'warn');
+    }
+    renderAdapterInfo();
+  } catch (e) {
+    const { level, text } = explainError(e, transport);
+    Log.add(level, text);
+    if (e?.name && level === 'error') Log.add('info', `Détail technique : ${e.name} — ${e.message}`);
+    toast(text, level === 'info' ? 'info' : 'error');
+    state.manualDisconnect = true;
+    try { await transport.disconnect(); } catch { /* ignoré */ }
+    state.manualDisconnect = false;
+    state.transport = null; state.elm = null;
+    setConnState(level === 'info' ? 'disconnected' : 'error', text);
+    renderAdapterInfo();
+  } finally {
+    state.busy = false;
+    updateButtons();
+  }
+}
+
+async function disconnectAdapter() {
+  state.manualDisconnect = true;
+  await stopLive();
+  state.elm?.abort('Déconnexion manuelle');
+  try { await state.transport?.disconnect(); } catch (e) { Log.add('warn', `Déconnexion : ${e.message}`); }
+  Log.add('info', 'Adaptateur déconnecté.');
+  state.transport = null; state.elm = null;
+  state.manualDisconnect = false;
+  setConnState('disconnected', 'Aucun adaptateur connecté.');
+  renderAdapterInfo();
+}
+
+function onTransportLost() {
+  if (state.manualDisconnect) return;
+  Log.add('error', 'Connexion Bluetooth perdue (adaptateur débranché, hors de portée ou en veille).');
+  toast('Connexion à l\'adaptateur perdue.', 'error');
+  state.live = false;
+  state.elm?.abort('Connexion Bluetooth perdue');
+  state.elm = null; state.transport = null;
+  keepAwake(false);
+  setConnState('disconnected', 'Liaison perdue — utilisez le bouton de reconnexion.');
+  updateLiveButton();
+  renderAdapterInfo();
+}
+
+async function updateVoltage() {
+  if (!state.elm) return;
+  try {
+    const v = await state.elm.readVoltage();
+    if (v != null) { state.values.volt = v; pushHist('volt', v); }
+    renderHeaderVolt();
+  } catch (e) { Log.add('warn', `Tension : ${e.message}`, { live: true }); }
+}
+
+/* =====================================================================
+ * Boucle Live
+ * ===================================================================== */
+function pushHist(key, v) {
+  (state.hist[key] ??= []).push(v);
+  if (state.hist[key].length > 90) state.hist[key].shift();
+  const mm = (state.minmax[key] ??= { min: v, max: v });
+  mm.min = Math.min(mm.min, v); mm.max = Math.max(mm.max, v);
+}
+
+async function readAndStore(pid) {
+  const def = PID_DEFS[pid];
+  const v = def.decode(await state.elm.readPid(pid, { live: true }));
+  state.values[def.key] = v;
+  pushHist(def.key, v);
+  return v;
+}
+
+async function startLive() {
+  const elm = state.elm;
+  if (!elm) { toast('Connectez d\'abord l\'adaptateur.', 'warn'); return; }
+  if (state.live) return;
+  if (!elm.vehicleOk) {
+    try {
+      setConnDetail('Nouvelle tentative de dialogue avec le véhicule…');
+      await elm.detectVehicle(setConnDetail);
+      setConnState('connected', `${elm.protocolDesc || 'Protocole détecté'} · ${elm.version}`);
+      renderAdapterInfo();
+    } catch (e) {
+      Log.add('error', `Le véhicule ne répond pas : ${e.message}`);
+      toast('Le véhicule ne répond pas : contact mis ?', 'error');
+      return;
+    }
+  }
+  state.live = true;
+  state.noData = {};
+  updateLiveButton();
+  keepAwake(true);
+  Log.add('info', 'Mode Live démarré.');
+
+  if (elm.supports(0x33)) {
+    try { await readAndStore(0x33); state.baroSource = 'pid'; Log.add('info', `Pression atmosphérique (PID 0133) : ${state.values.baro} kPa`); }
+    catch (e) { Log.add('warn', `Baro 0133 : ${e.message}`); }
+  }
+  state.livePromise = liveLoop();
+}
+
+async function stopLive() {
+  if (!state.live) return;
+  state.live = false;
+  await state.livePromise?.catch(() => {});
+  keepAwake(false);
+  updateLiveButton();
+  Log.add('info', 'Mode Live arrêté.');
+}
+
+async function liveLoop() {
+  let cycle = 0, timeouts = 0, lastRateT = performance.now(), cyclesSinceRate = 0;
+  const elm = state.elm;
+  while (state.live && state.elm === elm) {
+    const pids = [0x0C, 0x0B, 0x0D, 0x04];
+    if (cycle % 6 === 0) pids.push(0x05);
+    let ok = 0;
+    for (const pid of pids) {
+      if (!state.live) break;
+      if (!elm.supports(pid) || state.disabledPids.has(pid)) continue;
+      try {
+        await readAndStore(pid);
+        ok++; timeouts = 0; state.noData[pid] = 0;
+      } catch (e) {
+        if (e.code === 'NO_DATA' || e.code === 'BAD_RESPONSE') {
+          state.noData[pid] = (state.noData[pid] || 0) + 1;
+          if (state.noData[pid] >= 4 && ok > 0) {
+            state.disabledPids.add(pid);
+            Log.add('warn', `PID 01${hex2(pid)} sans réponse répétée : retiré du Live.`);
+          }
+        } else if (e.code === 'TIMEOUT') {
+          timeouts++;
+          Log.add('warn', e.message);
+          if (timeouts >= 4) {
+            Log.add('error', 'Communication interrompue : 4 délais dépassés consécutifs. Live arrêté.');
+            toast('Plus de réponse de l\'adaptateur : Live arrêté.', 'error');
+            state.live = false; break;
+          }
+        } else if (e.code === 'ABORTED' || e instanceof TransportError || e.name === 'NetworkError') {
+          state.live = false; break;
+        } else if (e.code === 'UNABLE_TO_CONNECT') {
+          Log.add('warn', e.message);
+          await sleep(1000);
+        } else {
+          Log.add('warn', `01${hex2(pid)} : ${e.message}`);
+        }
+      }
+    }
+    if (!state.live) break;
+    if (ok === 0) { Log.add('warn', 'Aucune donnée ce cycle (contact coupé ?).', { live: true }); await sleep(800); }
+
+    if (cycle % 30 === 15) await updateVoltage();
+
+    // Pression atmosphérique de repli : MAP mesurée moteur arrêté
+    if (state.baroSource !== 'pid' && state.values.rpm === 0 && state.values.map != null) {
+      state.values.baro = state.values.map; state.baroSource = 'MAP moteur arrêté';
+    }
+
+    const v = state.values;
+    const sample = { t: performance.now(), rpm: v.rpm, map: v.map, ect: v.ect, speed: v.speed, load: elm.supports(0x04) && !state.disabledPids.has(0x04) ? v.load : null };
+    if (v.map != null) pushHist('boost', (v.map - currentBaro()) / 100);
+    try {
+      analyzer.push(sample, state.profile, currentBaro());
+      AccelTest.feed(sample, state.profile, currentBaro(), analyzer.ctx);
+    } catch (e) {
+      Log.add('error', `Erreur interne du module d'analyse : ${e.message}`);
+      console.error(e);
+    }
+
+    cycle++; cyclesSinceRate++;
+    const now = performance.now();
+    if (now - lastRateT >= 1000) { state.rate = (cyclesSinceRate * 1000) / (now - lastRateT); lastRateT = now; cyclesSinceRate = 0; }
+    queueRender();
+    await sleep(0);
+  }
+  state.live = false;
+  keepAwake(false);
+  updateLiveButton();
+}
+
+async function keepAwake(on) {
+  try {
+    if (on && 'wakeLock' in navigator && !state.wakeLock) {
+      state.wakeLock = await navigator.wakeLock.request('screen');
+      state.wakeLock.addEventListener('release', () => { state.wakeLock = null; });
+    } else if (!on && state.wakeLock) {
+      await state.wakeLock.release(); state.wakeLock = null;
+    }
+  } catch (e) { Log.add('warn', `Maintien de l'écran allumé indisponible : ${e.message}`); }
+}
+
+function updateLiveButton() {
+  const b = $('#btn-live');
+  if (state.live) { b.className = 'btn btn-danger'; b.innerHTML = '<i data-lucide="square" class="h-4 w-4"></i>Arrêter le Live'; }
+  else { b.className = 'btn btn-success'; b.innerHTML = '<i data-lucide="play" class="h-4 w-4"></i>Démarrer le Live'; }
+  updateButtons();
+}
+
+/* =====================================================================
+ * Rendu : cartes Live
+ * ===================================================================== */
+const MAIN_CARDS = [
+  { key: 'rpm', label: 'Régime moteur', icon: 'gauge', unit: 'tr/min', pid: '010C', color: '#f59e0b', bar: 'bg-amber-500', max: (p) => p.redline + 500, dec: 0 },
+  { key: 'map', label: 'Pression admission (MAP)', icon: 'wind', unit: 'kPa', pid: '010B', color: '#38bdf8', bar: 'bg-sky-400', max: () => 260, dec: 0 },
+  { key: 'ect', label: 'Liquide de refroidissement', icon: 'thermometer', unit: '°C', pid: '0105', color: '#f87171', bar: 'bg-red-400', max: () => 120, dec: 0 },
+  { key: 'speed', label: 'Vitesse véhicule', icon: 'car-front', unit: 'km/h', pid: '010D', color: '#a78bfa', bar: 'bg-violet-400', max: () => 200, dec: 0 },
+];
+const SECONDARY_CARDS = [
+  { key: 'load', label: 'Charge moteur', icon: 'activity', unit: '%', sub: 'PID 0104', color: '#34d399', max: () => 100, dec: 0 },
+  { key: 'boost', label: 'Suralimentation relative', icon: 'trending-up', unit: 'bar', sub: 'MAP − pression atmo', color: '#38bdf8', max: () => 1.6, dec: 2 },
+  { key: 'volt', label: 'Tension batterie', icon: 'battery-medium', unit: 'V', sub: 'ATRV (adaptateur)', color: '#facc15', max: () => 16, dec: 1 },
+  { key: 'baro', label: 'Pression atmosphérique', icon: 'mountain', unit: 'kPa', sub: 'PID 0133', color: '#a1a1aa', max: () => 110, dec: 0 },
+];
+
+function buildLiveCards() {
+  $('#live-main').innerHTML = MAIN_CARDS.map((c) => `
+    <div class="card relative overflow-hidden" id="card-${c.key}">
+      <div class="flex items-center justify-between gap-2">
+        <h3 class="card-title"><i data-lucide="${c.icon}" class="h-4 w-4"></i>${c.label}</h3>
+        <span class="chip hidden" data-status></span>
+      </div>
+      <div class="mt-3 flex items-baseline gap-2">
+        <span class="tabular font-mono text-5xl font-bold tracking-tight" data-value>--</span>
+        <span class="text-sm text-zinc-500">${c.unit}</span>
+      </div>
+      <p class="mt-1 h-4 text-xs text-zinc-500" data-sub>PID ${c.pid}</p>
+      <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-zinc-800">
+        <div data-bar class="h-full rounded-full ${c.bar} transition-[width] duration-300" style="width:0%"></div>
+      </div>
+      <canvas data-spark class="mt-3 h-12 w-full"></canvas>
+      <div class="mt-1 flex justify-between font-mono text-[11px] text-zinc-500"><span data-min>min --</span><span data-max>max --</span></div>
+    </div>`).join('');
+  $('#live-secondary').innerHTML = SECONDARY_CARDS.map((c) => `
+    <div class="card p-3 sm:p-4" id="card-${c.key}">
+      <h3 class="card-title text-[10px] sm:text-xs"><i data-lucide="${c.icon}" class="h-3.5 w-3.5"></i>${c.label}</h3>
+      <div class="mt-2 flex items-baseline gap-1.5">
+        <span class="tabular font-mono text-2xl font-bold" data-value>--</span>
+        <span class="text-xs text-zinc-500">${c.unit}</span>
+      </div>
+      <canvas data-spark class="mt-2 h-8 w-full"></canvas>
+      <p class="mt-1 truncate text-[11px] text-zinc-500" data-sub>${c.sub}</p>
+    </div>`).join('');
+  refreshIcons();
+}
+
+function liveStatus(key, v, p) {
+  if (v == null) return null;
+  const r = analyzer.results;
+  switch (key) {
+    case 'rpm':
+      if (v === 0) return { status: 'wait', label: 'ARRÊT' };
+      if (v > p.redline) return { status: 'alert', label: 'SURRÉGIME' };
+      return { status: 'ok', label: 'OK' };
+    case 'map': {
+      const worst = [r.boost, r.collapse, r.overboost, r.mapIdle].filter(Boolean).reduce((a, x) => (RANK[x.status] > RANK[a.status] ? x : a), { status: 'ok' });
+      return { status: worst.status === 'info' ? 'ok' : worst.status, label: worst.status === 'alert' ? 'ANOMALIE' : worst.status === 'warn' ? 'À SURVEILLER' : 'OK' };
+    }
+    case 'ect':
+      if (v >= p.coolant.alarm) return { status: 'alert', label: 'SURCHAUFFE' };
+      if (v > p.coolant.normalMax) return { status: 'warn', label: 'ÉLEVÉE' };
+      if (v < p.coolant.warmMin) return { status: 'info', label: 'EN CHAUFFE' };
+      return { status: 'ok', label: 'NORMALE' };
+    default: return null;
+  }
+}
+
+function renderLive() {
+  const p = state.profile;
+  const visible = !$('#tab-live').classList.contains('hidden');
+  for (const c of [...MAIN_CARDS, ...SECONDARY_CARDS]) {
+    const card = $(`#card-${c.key}`);
+    if (!card) continue;
+    const v = c.key === 'boost' ? (state.values.map != null ? (state.values.map - currentBaro()) / 100 : null) : state.values[c.key];
+    card.querySelector('[data-value]').textContent = fmtNum(v, c.dec);
+    const bar = card.querySelector('[data-bar]');
+    if (bar && v != null) bar.style.width = `${clamp((v / c.max(p)) * 100, 0, 100)}%`;
+    const mm = state.minmax[c.key];
+    if (mm && card.querySelector('[data-min]')) {
+      card.querySelector('[data-min]').textContent = `min ${fmtNum(mm.min, c.dec)}`;
+      card.querySelector('[data-max]').textContent = `max ${fmtNum(mm.max, c.dec)}`;
+    }
+    const chip = card.querySelector('[data-status]');
+    if (chip) {
+      const st = liveStatus(c.key, v, p);
+      chip.classList.toggle('hidden', !st);
+      if (st) { chip.className = `chip ${STATUS_STYLE[st.status].chip}`; chip.textContent = st.label; }
+    }
+    if (c.key === 'map' && v != null) {
+      const b = (v - currentBaro()) / 100;
+      card.querySelector('[data-sub]').textContent = `PID 010B · ${b >= 0 ? '+' : ''}${fmtNum(b, 2)} bar relatifs${v >= 255 ? ' · plafond PID atteint' : ''}`;
+    }
+    if (c.key === 'baro') card.querySelector('[data-sub]').textContent = `Source : ${state.baroSource === 'pid' ? 'PID 0133' : state.baroSource}`;
+    if (c.key === 'load' && state.disabledPids.has(0x04)) card.querySelector('[data-sub]').textContent = 'Non supporté par le calculateur';
+    if (visible) drawSpark(card.querySelector('[data-spark]'), state.hist[c.key] || [], c.color);
+  }
+  $('#live-rate').textContent = `${fmtNum(state.rate, 1)} cycles/s`;
+  renderHeaderVolt();
+}
+
+function renderHeaderVolt() {
+  const v = state.values.volt;
+  const el = $('#hdr-volt');
+  el.querySelector('span').textContent = v != null ? `${fmtNum(v, 1)} V` : '-- V';
+  const cls = v == null ? 'border-zinc-700 bg-zinc-900 text-zinc-300'
+    : v < 11.8 || v > 15.2 ? 'border-red-500/50 bg-red-500/10 text-red-300'
+    : v < 12.3 ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+    : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300';
+  el.className = `chip ${cls} ${v == null ? 'hidden' : 'hidden sm:inline-flex'}`;
+}
+
+function queueRender() {
+  if (state.renderQueued) return;
+  state.renderQueued = true;
+  requestAnimationFrame(() => {
+    state.renderQueued = false;
+    renderLive();
+    renderDiag();
+  });
+}
+
+/* =====================================================================
+ * Rendu : canvas (sparklines + courbe de suralimentation)
+ * ===================================================================== */
+function fitCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return null;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function drawSpark(canvas, values, color) {
+  const f = canvas && fitCanvas(canvas);
+  if (!f || values.length < 2) return;
+  const { ctx, w, h } = f;
+  let min = Math.min(...values), max = Math.max(...values);
+  if (max - min < 1e-6) { max += 1; min -= 1; }
+  const x = (i) => (i / (values.length - 1)) * w;
+  const y = (v) => h - 2 - ((v - min) / (max - min)) * (h - 4);
+  ctx.beginPath();
+  values.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
+  ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.lineJoin = 'round'; ctx.stroke();
+  ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, color + '40'); g.addColorStop(1, color + '00');
+  ctx.fillStyle = g; ctx.fill();
+}
+
+function drawBoostChart(canvas, profile, baro, points = []) {
+  const f = canvas && fitCanvas(canvas);
+  if (!f) return;
+  const { ctx, w, h } = f;
+  const pad = { l: 40, r: 12, t: 12, b: 26 };
+  const xMin = 750, xMax = Math.max(4500, (profile.redline || 4500) + 250);
+  const curve = profile.map.curve || [];
+  const yMaxData = Math.max(baro + 20, ...curve.map((c) => c[1]), ...points.map((p) => p.map), profile.aspiration === 'turbo' ? 0 : 110);
+  const yMin = profile.map.idleRef === 'abs' ? 0 : 60;
+  const yMax = Math.ceil((yMaxData + 15) / 50) * 50;
+  const X = (v) => pad.l + ((v - xMin) / (xMax - xMin)) * (w - pad.l - pad.r);
+  const Y = (v) => h - pad.b - ((v - yMin) / (yMax - yMin)) * (h - pad.t - pad.b);
+
+  ctx.font = '10px "JetBrains Mono", monospace';
+  ctx.fillStyle = '#71717a'; ctx.strokeStyle = '#27272a'; ctx.lineWidth = 1;
+  for (let v = Math.ceil(yMin / 50) * 50; v <= yMax; v += 50) {
+    ctx.beginPath(); ctx.moveTo(pad.l, Y(v)); ctx.lineTo(w - pad.r, Y(v)); ctx.stroke();
+    ctx.textAlign = 'right'; ctx.fillText(String(v), pad.l - 6, Y(v) + 3);
+  }
+  for (let v = 1000; v <= xMax; v += 500) {
+    ctx.beginPath(); ctx.moveTo(X(v), pad.t); ctx.lineTo(X(v), h - pad.b); ctx.stroke();
+    if (v % 1000 === 0) { ctx.textAlign = 'center'; ctx.fillText(`${v / 1000}k`, X(v), h - 8); }
+  }
+  ctx.textAlign = 'left'; ctx.fillText('tr/min', w - pad.r - 38, h - 8);
+
+  // Pression atmosphérique
+  ctx.setLineDash([2, 4]); ctx.strokeStyle = '#a1a1aa';
+  ctx.beginPath(); ctx.moveTo(pad.l, Y(baro)); ctx.lineTo(w - pad.r, Y(baro)); ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (curve.length) {
+    // Bande de tolérance (82 % de la suralimentation attendue)
+    const steps = [];
+    for (let r = curve[0][0]; r <= curve.at(-1)[0]; r += 50) steps.push(r);
+    ctx.beginPath();
+    steps.forEach((r, i) => { const yv = Y(interp(curve, r)); i ? ctx.lineTo(X(r), yv) : ctx.moveTo(X(r), yv); });
+    [...steps].reverse().forEach((r) => ctx.lineTo(X(r), Y(baro + (interp(curve, r) - baro) * 0.82)));
+    ctx.closePath(); ctx.fillStyle = 'rgba(251,191,36,.10)'; ctx.fill();
+    // Courbe attendue
+    ctx.setLineDash([6, 4]); ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2;
+    ctx.beginPath(); curve.forEach(([r, m], i) => (i ? ctx.lineTo(X(r), Y(m)) : ctx.moveTo(X(r), Y(m)))); ctx.stroke();
+    ctx.setLineDash([]);
+  } else {
+    ctx.fillStyle = '#71717a'; ctx.textAlign = 'center';
+    ctx.fillText('Pas de courbe de suralimentation (moteur atmosphérique)', (pad.l + w - pad.r) / 2, pad.t + 16);
+  }
+
+  if (points.length > 1) {
+    ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+    ctx.beginPath(); points.forEach((p, i) => (i ? ctx.lineTo(X(p.rpm), Y(p.map)) : ctx.moveTo(X(p.rpm), Y(p.map)))); ctx.stroke();
+    for (const p of points) {
+      const exp = curve.length ? interp(curve, p.rpm) : null;
+      const ratio = exp ? (p.map - baro) / Math.max(1, exp - baro) : 1;
+      ctx.fillStyle = p.rpm < 1500 ? '#38bdf8' : ratio < 0.65 ? '#ef4444' : ratio < 0.82 ? '#f59e0b' : '#34d399';
+      ctx.beginPath(); ctx.arc(X(p.rpm), Y(p.map), 2.6, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+}
+
+/* =====================================================================
+ * Rendu : diagnostic
+ * ===================================================================== */
+function renderDiag() {
+  const overall = analyzer.overall();
+  const banner = {
+    ok: ['circle-check', 'Aucune anomalie détectée', 'Les mesures sont cohérentes avec le profil du véhicule.', 'border-emerald-500/40 bg-emerald-500/10', 'bg-emerald-500/20 text-emerald-300'],
+    warn: ['triangle-alert', 'Point de vigilance', 'Une ou plusieurs mesures sortent légèrement de la plage attendue.', 'border-amber-500/50 bg-amber-500/10', 'bg-amber-500/20 text-amber-300'],
+    alert: ['octagon-alert', 'Anomalie détectée', 'Consultez les pistes proposées ci-dessous.', 'border-red-500/60 bg-red-500/10', 'bg-red-500/20 text-red-300'],
+    wait: ['hourglass', 'En attente de données', state.live ? 'Analyse en cours : roulez / accélérez pour remplir les conditions de test.' : 'Démarrez le mode Live pour lancer l\'analyse en temps réel.', 'border-zinc-800', 'bg-zinc-800 text-zinc-400'],
+  }[overall] || [];
+  const b = $('#diag-banner');
+  b.className = `card flex items-center gap-4 ${banner[3]}`;
+  const p = state.profile;
+  b.innerHTML = `
+    <div class="grid h-12 w-12 shrink-0 place-items-center rounded-2xl ${banner[4]}"><i data-lucide="${banner[0]}" class="h-6 w-6"></i></div>
+    <div class="min-w-0 flex-1">
+      <p class="text-lg font-bold">${banner[1]}</p>
+      <p class="text-sm text-zinc-400">${banner[2]}</p>
+    </div>
+    <div class="hidden text-right text-xs text-zinc-500 sm:block">
+      <p>Profil : <span class="text-zinc-300">${esc(p.name)}</span></p>
+      <p>Pression atmo : <span class="font-mono text-zinc-300">${fmtNum(currentBaro())} kPa</span> (${esc(state.baroSource === 'pid' ? 'PID 0133' : state.baroSource)})</p>
+    </div>`;
+  $('#diag-dot').classList.toggle('hidden', overall !== 'alert');
+
+  $('#rules').innerHTML = RULES.map((rule) => {
+    const r = analyzer.results[rule.id];
+    const st = STATUS_STYLE[r.status];
+    return `
+      <div class="card ${st.ring} ${r.status === 'alert' && !r.stale ? 'bg-red-500/5' : ''}">
+        <div class="flex items-start justify-between gap-2">
+          <h3 class="flex items-center gap-2 text-sm font-semibold text-zinc-200"><i data-lucide="${rule.icon}" class="h-4 w-4 text-zinc-400"></i>${rule.title}</h3>
+          <span class="chip ${st.chip}"><i data-lucide="${st.icon}" class="h-3 w-3"></i>${st.label}</span>
+        </div>
+        <p class="mt-2 font-mono text-xs text-zinc-400">${esc(r.value || '—')}${r.stale ? ' <span class="text-zinc-600">· dernière mesure</span>' : ''}</p>
+        <p class="mt-2 text-sm ${r.status === 'alert' || r.status === 'warn' ? st.text + ' font-semibold' : 'text-zinc-300'}">${esc(r.message)}</p>
+        ${r.hint ? `<p class="mt-2 flex gap-1.5 rounded-lg bg-zinc-950/60 p-2 text-xs text-zinc-400"><i data-lucide="wrench" class="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-500"></i><span><b class="text-zinc-300">Pistes :</b> ${esc(r.hint)}</span></p>` : ''}
+      </div>`;
+  }).join('');
+
+  const hist = $('#diag-history');
+  hist.innerHTML = analyzer.history.length
+    ? analyzer.history.map((h) => `
+        <li class="rounded-xl border ${STATUS_STYLE[h.status].ring} bg-zinc-950/50 p-2.5 text-xs">
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-semibold ${STATUS_STYLE[h.status].text}">${esc(h.title)}</span>
+            <span class="font-mono text-zinc-500">${new Date(h.time).toLocaleTimeString('fr-FR')}</span>
+          </div>
+          <p class="mt-1 text-zinc-300">${esc(h.message)}</p>
+          <p class="mt-0.5 font-mono text-zinc-500">${esc(h.value)}</p>
+        </li>`).join('')
+    : '<li class="py-6 text-center text-xs text-zinc-500">Aucune anomalie enregistrée.</li>';
+
+  renderAccel(true);
+  refreshIcons();
+}
+
+function renderAccel(fromDiag = false) {
+  const t = AccelTest;
+  const box = $('#accel-status');
+  const v = state.values;
+  const states = {
+    idle: ['circle-dot', 'text-zinc-400', 'Prêt. Lancez le test puis suivez les étapes.'],
+    armed: ['radar', 'text-amber-300', 'En attente : accélérez à fond depuis 1 200 – 1 500 tr/min…'],
+    recording: ['circle-dot', 'text-red-400', `Enregistrement… ${t.points.length} points`],
+    done: ['flag', 'text-emerald-300', 'Test terminé.'],
+  }[t.state];
+  box.innerHTML = `
+    <div class="flex items-center gap-2 ${states[1]}"><i data-lucide="${states[0]}" class="h-4 w-4 ${t.state === 'recording' ? 'animate-pulse' : ''}"></i><span class="font-semibold">${states[2]}</span></div>
+    <div class="mt-2 grid grid-cols-3 gap-2 font-mono text-xs text-zinc-400">
+      <span>${fmtNum(v.rpm)} <span class="text-zinc-600">tr/min</span></span>
+      <span>${fmtNum(v.map)} <span class="text-zinc-600">kPa</span></span>
+      <span>${fmtNum(v.load)} <span class="text-zinc-600">%</span></span>
+    </div>`;
+  $('#btn-accel-start').classList.toggle('hidden', t.state === 'armed' || t.state === 'recording');
+  $('#btn-accel-cancel').classList.toggle('hidden', !(t.state === 'armed' || t.state === 'recording'));
+  $('#btn-accel-start').innerHTML = `<i data-lucide="${t.state === 'done' ? 'rotate-ccw' : 'play'}" class="h-3.5 w-3.5"></i>${t.state === 'done' ? 'Refaire le test' : 'Lancer le test'}`;
+
+  const res = t.result;
+  $('#accel-result').innerHTML = res ? `
+    <div class="rounded-xl border ${STATUS_STYLE[res.status].ring} bg-zinc-950/60 p-3">
+      <p class="flex items-start gap-2 text-sm font-semibold ${STATUS_STYLE[res.status].text}"><i data-lucide="${STATUS_STYLE[res.status].icon}" class="mt-0.5 h-4 w-4 shrink-0"></i>${esc(res.title)}</p>
+      <ul class="mt-2 space-y-1 text-xs text-zinc-300">${res.lines.map((l) => `<li>• ${l}</li>`).join('')}</ul>
+    </div>` : '';
+
+  const tabVisible = !$('#tab-diag').classList.contains('hidden');
+  if (tabVisible) drawBoostChart($('#accel-chart'), state.profile, currentBaro(), t.points);
+  if (!fromDiag) refreshIcons();
+}
+
+/* =====================================================================
+ * Rendu : profil véhicule + éditeur
+ * ===================================================================== */
+function renderProfileSelect() {
+  const sel = $('#profile-select');
+  const opt = (p) => `<option value="${esc(p.id)}" ${p.id === state.profile.id ? 'selected' : ''}>${esc(p.name)}</option>`;
+  sel.innerHTML = `<optgroup label="Préréglages">${PRESET_PROFILES.map(opt).join('')}</optgroup>`
+    + (Profiles.custom.length ? `<optgroup label="Mes profils">${Profiles.custom.map(opt).join('')}</optgroup>` : '');
+}
+
+function renderProfile() {
+  const p = state.profile;
+  $('#hdr-vehicle').textContent = p.name;
+  $('#profile-kind').textContent = p.preset ? 'Préréglage' : 'Profil personnalisé';
+  $('#btn-profile-edit').disabled = !!p.preset;
+  $('#btn-profile-delete').disabled = !!p.preset;
+  const item = (icon, label, value) => `
+    <div class="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
+      <p class="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-zinc-500"><i data-lucide="${icon}" class="h-3.5 w-3.5"></i>${label}</p>
+      <p class="mt-1 font-mono text-sm text-zinc-100">${value}</p>
+    </div>`;
+  const mapIdle = p.map.idleRef === 'baro' ? `atmo ${p.map.idleMin} / +${p.map.idleMax} kPa` : `${p.map.idleMin} – ${p.map.idleMax} kPa abs.`;
+  const at2000 = p.map.curve.length ? `${fmtNum(interp(p.map.curve, 2000))} kPa @ 2 000` : '—';
+  $('#profile-details').innerHTML = `
+    <div class="flex flex-wrap items-center gap-2 text-sm">
+      <span class="chip border-zinc-700 text-zinc-300"><i data-lucide="cog" class="h-3 w-3"></i>${esc(p.engine || '—')}</span>
+      <span class="chip border-zinc-700 text-zinc-300"><i data-lucide="fuel" class="h-3 w-3"></i>${p.fuel === 'diesel' ? 'Diesel' : 'Essence'}</span>
+      <span class="chip border-zinc-700 text-zinc-300"><i data-lucide="fan" class="h-3 w-3"></i>${p.aspiration === 'turbo' ? 'Turbo' : 'Atmosphérique'}</span>
+      ${p.years ? `<span class="chip border-zinc-700 text-zinc-300"><i data-lucide="calendar" class="h-3 w-3"></i>${esc(p.years)}</span>` : ''}
+    </div>
+    <div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+      ${item('gauge', 'Ralenti chaud', `${p.idle.min} – ${p.idle.max} tr/min`)}
+      ${item('audio-waveform', 'Instabilité max', `σ ${p.idle.stability} tr/min`)}
+      ${item('thermometer', 'Température', `${p.coolant.warmMin} – ${p.coolant.normalMax} °C`)}
+      ${item('flame', 'Surchauffe', `≥ ${p.coolant.alarm} °C`)}
+      ${item('wind', 'MAP ralenti', mapIdle)}
+      ${item('trending-up', 'MAP en charge', at2000)}
+      ${item('octagon-alert', 'MAP maxi', `${p.map.max} kPa`)}
+      ${item('trending-down', 'Chute signalée', `≥ ${p.map.collapseDrop} kPa`)}
+    </div>
+    ${p.notes ? `<p class="mt-4 flex gap-2 rounded-xl bg-zinc-950/50 p-3 text-xs text-zinc-400"><i data-lucide="notebook-pen" class="mt-0.5 h-3.5 w-3.5 shrink-0"></i>${esc(p.notes)}</p>` : ''}`;
+  refreshIcons();
+  drawBoostChart($('#profile-chart'), p, currentBaro());
+}
+
+function selectProfile(id) {
+  const p = Profiles.get(id) || PRESET_PROFILES[0];
+  state.profile = p;
+  Profiles.setActive(p.id);
+  analyzer.reset();
+  AccelTest.cancel();
+  renderProfileSelect();
+  renderProfile();
+  renderDiag();
+  Log.add('info', `Profil véhicule : ${p.name}`);
+}
+
+const EDITOR_FIELDS = [
+  { path: 'name', label: 'Nom du profil', type: 'text', span: 'sm:col-span-2' },
+  { path: 'make', label: 'Marque', type: 'text' },
+  { path: 'model', label: 'Modèle', type: 'text' },
+  { path: 'engine', label: 'Moteur', type: 'text', span: 'sm:col-span-2' },
+  { path: 'years', label: 'Années', type: 'text' },
+  { path: 'redline', label: 'Régime maxi (tr/min)', type: 'number' },
+  { path: 'fuel', label: 'Carburant', type: 'select', options: [['diesel', 'Diesel'], ['essence', 'Essence']] },
+  { path: 'aspiration', label: 'Admission', type: 'select', options: [['turbo', 'Turbocompressé'], ['atmo', 'Atmosphérique']] },
+  { path: 'idle.min', label: 'Ralenti mini (tr/min)', type: 'number' },
+  { path: 'idle.max', label: 'Ralenti maxi (tr/min)', type: 'number' },
+  { path: 'idle.stability', label: 'Instabilité tolérée (σ tr/min)', type: 'number' },
+  { path: 'coolant.warmMin', label: 'Moteur chaud à partir de (°C)', type: 'number' },
+  { path: 'coolant.normalMax', label: 'Température normale maxi (°C)', type: 'number' },
+  { path: 'coolant.alarm', label: 'Seuil de surchauffe (°C)', type: 'number' },
+  { path: 'map.idleRef', label: 'Référence MAP au ralenti', type: 'select', options: [['baro', 'Écart / pression atmo (diesel)'], ['abs', 'Absolue — dépression (essence)']] },
+  { path: 'map.idleMin', label: 'MAP ralenti mini (kPa)', type: 'number' },
+  { path: 'map.idleMax', label: 'MAP ralenti maxi (kPa)', type: 'number' },
+  { path: 'map.loadThreshold', label: 'Seuil « en charge » (% charge)', type: 'number' },
+  { path: 'map.max', label: 'MAP maxi avant surpression (kPa)', type: 'number' },
+  { path: 'map.collapseDrop', label: 'Chute MAP signalée (kPa)', type: 'number' },
+  { path: 'map.curve', label: 'Courbe MAP pleine charge — tr/min:kPa absolus, séparés par des virgules', type: 'curve', span: 'sm:col-span-2' },
+  { path: 'notes', label: 'Notes', type: 'textarea', span: 'sm:col-span-2 lg:col-span-4' },
+];
+let editorDraft = null;
+
+function openEditor(mode) {
+  const base = structuredClone(state.profile);
+  if (mode === 'new') {
+    editorDraft = { ...base, id: `custom-${Date.now()}`, preset: false, name: `${base.name} (copie)` };
+    $('#editor-title').textContent = 'Nouveau profil (copie du profil actuel)';
+  } else {
+    editorDraft = base;
+    $('#editor-title').textContent = `Modifier « ${base.name} »`;
+  }
+  $('#profile-form').innerHTML = EDITOR_FIELDS.map((f, i) => {
+    const val = getPath(editorDraft, f.path);
+    const id = `pf-${i}`;
+    let input;
+    if (f.type === 'select') input = `<select id="${id}" class="input">${f.options.map(([v, l]) => `<option value="${v}" ${v === val ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+    else if (f.type === 'textarea') input = `<textarea id="${id}" rows="2" class="input">${esc(val ?? '')}</textarea>`;
+    else if (f.type === 'curve') input = `<input id="${id}" class="input font-mono" value="${esc((val || []).map(([r, m]) => `${r}:${m}`).join(', '))}" placeholder="1500:160, 2000:220, 3000:235">`;
+    else input = `<input id="${id}" type="${f.type}" class="input ${f.type === 'number' ? 'font-mono' : ''}" value="${esc(val ?? '')}" ${f.type === 'number' ? 'step="any"' : ''}>`;
+    return `<div class="${f.span || ''}"><label class="label" for="${id}">${f.label}</label>${input}</div>`;
+  }).join('');
+  $('#profile-editor').classList.remove('hidden');
+  $('#profile-editor').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  refreshIcons();
+}
+
+function closeEditor() { editorDraft = null; $('#profile-editor').classList.add('hidden'); }
+
+function saveEditor() {
+  const p = editorDraft;
+  try {
+    EDITOR_FIELDS.forEach((f, i) => {
+      const raw = $(`#pf-${i}`).value.trim();
+      let v = raw;
+      if (f.type === 'number') {
+        v = Number(raw.replace(',', '.'));
+        if (raw === '' || Number.isNaN(v)) throw new Error(`Valeur numérique invalide : « ${f.label} »`);
+      } else if (f.type === 'curve') {
+        v = raw ? raw.split(/[,;\n]+/).map((pair) => {
+          const [r, m] = pair.split(':').map((x) => Number(x.trim()));
+          if (Number.isNaN(r) || Number.isNaN(m)) throw new Error(`Point de courbe invalide : « ${pair.trim()} » (format tr/min:kPa)`);
+          return [r, m];
+        }).sort((a, b) => a[0] - b[0]) : [];
+      }
+      setPath(p, f.path, v);
+    });
+    if (!p.name) throw new Error('Le nom du profil est obligatoire.');
+    if (p.idle.min >= p.idle.max) throw new Error('Le ralenti mini doit être inférieur au ralenti maxi.');
+    if (p.aspiration === 'turbo' && p.map.curve.length < 2) throw new Error('Un moteur turbo nécessite au moins 2 points de courbe MAP.');
+  } catch (e) { toast(e.message, 'error'); return; }
+  p.preset = false;
+  Profiles.upsert(p);
+  closeEditor();
+  selectProfile(p.id);
+  toast('Profil enregistré.', 'ok');
+}
+
+/* =====================================================================
+ * Informations adaptateur
+ * ===================================================================== */
+function renderAdapterInfo() {
+  const elm = state.elm;
+  const row = (k, v) => `<div class="kv"><dt>${k}</dt><dd>${v}</dd></div>`;
+  const sup = elm?.supported?.size ? [...elm.supported].filter((p) => p % 0x20).map(hex2).join(' ') : '—';
+  $('#adapter-info').innerHTML = [
+    row('Appareil', esc(elm ? state.deviceName : '—')),
+    row('Puce', esc(elm?.version || '—')),
+    row('Protocole', esc(elm?.protocolDesc || (elm?.protocol != null ? `n° ${elm.protocol}` : '—'))),
+    row('Tension', state.values.volt != null && elm ? `${fmtNum(state.values.volt, 1)} V` : '—'),
+    `<div class="kv flex-col items-start"><dt>PIDs mode 01 supportés</dt><dd class="w-full break-words text-left text-[11px] leading-relaxed text-zinc-400">${sup}</dd></div>`,
+  ].join('');
+}
+
+/* =====================================================================
+ * Codes défauts
+ * ===================================================================== */
+function renderDtc() {
+  const d = state.dtc;
+  const mil = $('#mil-status');
+  if (d.mil == null) {
+    mil.innerHTML = '<p class="text-sm text-zinc-400">État inconnu — lancez un scan.</p>';
+  } else {
+    mil.innerHTML = `
+      <div class="flex items-center gap-3">
+        <div class="grid h-12 w-12 place-items-center rounded-2xl ${d.mil.on ? 'bg-amber-500/20 text-amber-300 flash' : 'bg-emerald-500/15 text-emerald-300'}">
+          <i data-lucide="${d.mil.on ? 'siren' : 'circle-check'}" class="h-6 w-6"></i>
+        </div>
+        <div>
+          <p class="font-bold ${d.mil.on ? 'text-amber-300' : 'text-emerald-300'}">${d.mil.on ? 'Voyant moteur ALLUMÉ' : 'Voyant moteur éteint'}</p>
+          <p class="text-xs text-zinc-400">${d.mil.count} code(s) confirmé(s) signalé(s) par le calculateur</p>
+        </div>
+      </div>`;
+  }
+  const list = (arr, el, countEl, color) => {
+    $(countEl).textContent = arr == null ? '—' : `${arr.length} code${arr.length > 1 ? 's' : ''}`;
+    $(countEl).className = `chip ${arr?.length ? `${color[0]}` : 'border-zinc-700 text-zinc-400'}`;
+    if (arr == null) { $(el).innerHTML = '<li class="py-4 text-center text-xs text-zinc-500">Pas encore scanné.</li>'; return; }
+    if (!arr.length) { $(el).innerHTML = '<li class="flex items-center justify-center gap-2 py-4 text-sm text-emerald-300"><i data-lucide="circle-check" class="h-4 w-4"></i>Aucun code.</li>'; return; }
+    const q = encodeURIComponent(`${state.profile.make !== 'Générique' ? state.profile.make + ' ' + state.profile.model + ' ' : ''}`);
+    $(el).innerHTML = arr.map(({ code, ecu }) => {
+      const info = describeDtc(code);
+      return `
+        <li class="flex items-start gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
+          <span class="rounded-lg ${color[1]} px-2 py-1 font-mono text-base font-bold">${code}</span>
+          <div class="min-w-0 flex-1">
+            <p class="text-sm text-zinc-100">${esc(info.desc)}</p>
+            <p class="mt-0.5 text-xs text-zinc-500">${info.sys}${info.sub ? ' · ' + info.sub : ''} · ${info.manufacturer ? 'Code constructeur' : 'Générique SAE'} · ${esc(ecuName(ecu))}</p>
+          </div>
+          <a class="btn btn-ghost btn-sm shrink-0" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(code)}+${q}" title="Rechercher ce code"><i data-lucide="external-link" class="h-3.5 w-3.5"></i></a>
+        </li>`;
+    }).join('');
+  };
+  list(d.stored, '#dtc-stored', '#dtc-stored-count', ['border-red-500/50 bg-red-500/10 text-red-300', 'bg-red-500/15 text-red-300']);
+  list(d.pending, '#dtc-pending', '#dtc-pending-count', ['border-amber-500/40 bg-amber-500/10 text-amber-300', 'bg-amber-500/15 text-amber-300']);
+  $('#dtc-last').textContent = d.at ? `Dernier scan : ${d.at.toLocaleString('fr-FR')}` : 'Aucun scan effectué.';
+  refreshIcons();
+}
+
+async function scanDtcs() {
+  const elm = state.elm;
+  if (!elm) { toast('Connectez d\'abord l\'adaptateur.', 'warn'); return; }
+  const btn = $('#btn-dtc-scan');
+  btn.disabled = true;
+  btn.innerHTML = '<i data-lucide="loader-circle" class="h-4 w-4 spin"></i>Scan en cours…';
+  refreshIcons();
+  Log.add('info', 'Lecture des codes défauts (modes 01 01, 03, 07)…');
+  try {
+    if (!elm.vehicleOk) await elm.detectVehicle(setConnDetail);
+    try {
+      const d = await elm.readPid(0x01);
+      state.dtc.mil = { on: !!(d[0] & 0x80), count: d[0] & 0x7f };
+    } catch (e) { Log.add('warn', `État MIL (0101) : ${e.message}`); }
+    state.dtc.stored = await elm.readDtcs('03');
+    try { state.dtc.pending = await elm.readDtcs('07'); }
+    catch (e) { Log.add('warn', `Mode 07 : ${e.message}`); state.dtc.pending = []; }
+    state.dtc.at = new Date();
+    const n = state.dtc.stored.length + state.dtc.pending.length;
+    Log.add(n ? 'warn' : 'ok', `Scan terminé : ${state.dtc.stored.length} confirmé(s) [${state.dtc.stored.map((x) => x.code).join(', ')}], ${state.dtc.pending.length} en attente [${state.dtc.pending.map((x) => x.code).join(', ')}]`);
+    toast(n ? `${n} code(s) défaut trouvé(s).` : 'Aucun code défaut.', n ? 'warn' : 'ok');
+  } catch (e) {
+    Log.add('error', `Scan des défauts impossible : ${e.message}`);
+    toast(`Scan impossible : ${e.message}`, 'error');
+  } finally {
+    btn.innerHTML = '<i data-lucide="scan-search" class="h-4 w-4"></i>Scanner les défauts';
+    updateButtons();
+    renderDtc();
+  }
+}
+
+function openClearModal() {
+  if (!state.elm) { toast('Connectez d\'abord l\'adaptateur.', 'warn'); return; }
+  $('#clear-ack').checked = false;
+  $('#btn-clear-confirm').disabled = true;
+  const m = $('#modal-clear');
+  m.classList.remove('hidden'); m.classList.add('grid');
+}
+function closeClearModal() { const m = $('#modal-clear'); m.classList.add('hidden'); m.classList.remove('grid'); }
+
+async function clearDtcs() {
+  closeClearModal();
+  const elm = state.elm;
+  if (!elm) return;
+  if ((state.values.rpm ?? 0) > 400) Log.add('warn', 'Moteur tournant détecté : certains calculateurs refusent l\'effacement moteur en marche.');
+  Log.add('warn', 'Envoi de la commande d\'effacement (mode 04)…');
+  try {
+    const ecus = await elm.clearDtcs();
+    Log.add('ok', `Codes défauts effacés (${ecus.map(ecuName).join(', ') || 'ECU'}).`);
+    toast('Codes défauts effacés.', 'ok');
+    await sleep(1500);
+    await scanDtcs();
+  } catch (e) {
+    Log.add('error', `Effacement impossible : ${e.message}`);
+    toast(e.message, 'error');
+  }
+}
+
+/* =====================================================================
+ * Console : commandes manuelles, export
+ * ===================================================================== */
+async function sendManual(cmd) {
+  cmd = cmd.trim().toUpperCase();
+  if (!cmd) return;
+  if (!state.elm) { toast('Aucun adaptateur connecté.', 'warn'); return; }
+  if (/^ATZ|^ATWS|^ATD$|^ATE1|^ATS1|^ATH0|^ATL1/.test(cmd)) Log.add('warn', `« ${cmd} » modifie la configuration utilisée par l'application : reconnectez ensuite si besoin.`);
+  if (cmd === '04') { openClearModal(); return; }
+  try { await state.elm.send(cmd, { timeout: 8000 }); }
+  catch (e) { Log.add('error', e.message); }
+}
+
+/* =====================================================================
+ * Navigation & événements
+ * ===================================================================== */
+function showTab(tab) {
+  $$('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+  $$('.tab-panel').forEach((p) => p.classList.toggle('hidden', p.id !== `tab-${tab}`));
+  try { localStorage.setItem('carbuddy.tab', tab); } catch { /* ignoré */ }
+  requestAnimationFrame(() => {
+    if (tab === 'vehicle') drawBoostChart($('#profile-chart'), state.profile, currentBaro());
+    if (tab === 'live') renderLive();
+    if (tab === 'diag') renderDiag();
+    if (tab === 'console' && Log.autoscroll) Log.el.scrollTop = Log.el.scrollHeight;
+  });
+}
+
+function bindEvents() {
+  $$('.tab-btn').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+  $('#ticker').addEventListener('click', () => showTab('console'));
+
+  const toggleConn = () => (state.elm ? disconnectAdapter() : connectAdapter());
+  $('#btn-connect').addEventListener('click', toggleConn);
+  $('#btn-connect-2').addEventListener('click', toggleConn);
+  $('#btn-reconnect').addEventListener('click', () => connectAdapter({ reuse: true }));
+
+  $('#opt-sim').addEventListener('change', (e) => {
+    $('#sim-leak-row').classList.toggle('hidden', !e.target.checked);
+    $('#sim-leak-row').classList.toggle('flex', e.target.checked);
+  });
+  $('#opt-sim-leak').addEventListener('change', (e) => {
+    if (state.transport?.kind === 'sim') {
+      state.transport.leak = e.target.checked;
+      Log.add('info', `Simulateur : fuite d'air ${e.target.checked ? 'activée' : 'désactivée'}.`);
+    }
+  });
+  $('#opt-fast').addEventListener('change', (e) => { if (state.elm) state.elm.fast = e.target.checked; });
+
+  $('#btn-live').addEventListener('click', () => (state.live ? stopLive() : startLive()));
+  $('#btn-live-reset').addEventListener('click', () => { state.minmax = {}; analyzer.maxMap = null; renderLive(); });
+
+  $('#profile-select').addEventListener('change', (e) => selectProfile(e.target.value));
+  $('#btn-profile-new').addEventListener('click', () => openEditor('new'));
+  $('#btn-profile-edit').addEventListener('click', () => openEditor('edit'));
+  $('#btn-profile-delete').addEventListener('click', () => {
+    const p = state.profile;
+    if (p.preset) return;
+    Profiles.remove(p.id);
+    toast(`Profil « ${p.name} » supprimé.`, 'info');
+    selectProfile(PRESET_PROFILES[0].id);
+  });
+  $('#btn-editor-close').addEventListener('click', closeEditor);
+  $('#btn-editor-cancel').addEventListener('click', closeEditor);
+  $('#btn-editor-save').addEventListener('click', saveEditor);
+
+  $('#btn-accel-start').addEventListener('click', () => AccelTest.start());
+  $('#btn-accel-cancel').addEventListener('click', () => AccelTest.cancel());
+  $('#btn-history-clear').addEventListener('click', () => { analyzer.history = []; renderDiag(); });
+
+  $('#btn-dtc-scan').addEventListener('click', scanDtcs);
+  $('#btn-dtc-clear').addEventListener('click', openClearModal);
+  $('#clear-ack').addEventListener('change', (e) => { $('#btn-clear-confirm').disabled = !e.target.checked; });
+  $('#btn-clear-cancel').addEventListener('click', closeClearModal);
+  $('#btn-clear-confirm').addEventListener('click', clearDtcs);
+  $('#modal-clear').addEventListener('click', (e) => { if (e.target.id === 'modal-clear') closeClearModal(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeClearModal(); });
+
+  // Console
+  $$('#log-filters [data-filter]').forEach((b) => b.addEventListener('click', () => {
+    const cls = `hide-${b.dataset.filter}`;
+    const hidden = Log.el.classList.toggle(cls);
+    b.classList.toggle('opacity-40', hidden);
+  }));
+  $('#log-live').addEventListener('change', (e) => { Log.liveFrames = e.target.checked; });
+  $('#log-autoscroll').addEventListener('change', (e) => { Log.autoscroll = e.target.checked; });
+  $('#btn-log-clear').addEventListener('click', () => Log.clear());
+  $('#btn-log-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(Log.lines.join('\n')); toast('Journal copié.', 'ok'); }
+    catch (e) { toast(`Copie impossible : ${e.message}`, 'error'); }
+  });
+  $('#btn-log-download').addEventListener('click', () => {
+    const blob = new Blob([Log.lines.join('\n')], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `carbuddy-obd-${new Date().toISOString().replace(/[:.]/g, '-')}.log`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+  $('#cmd-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = $('#cmd-input');
+    sendManual(input.value); input.value = '';
+  });
+  $$('[data-quick]').forEach((b) => b.addEventListener('click', () => sendManual(b.dataset.quick)));
+
+  let resizeT;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeT);
+    resizeT = setTimeout(() => { renderProfile(); renderLive(); renderAccel(); }, 150);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state.live) keepAwake(true);
+  });
+  window.addEventListener('beforeunload', () => {
+    state.manualDisconnect = true;
+    try { state.transport?.disconnect(); } catch { /* ignoré */ }
+  });
+}
+
+/* =====================================================================
+ * Démarrage
+ * ===================================================================== */
+function init() {
+  Log.el = $('#console');
+  Profiles.load();
+  state.profile = Profiles.get(Profiles.activeId()) || PRESET_PROFILES[0];
+  buildLiveCards();
+  bindEvents();
+  renderProfileSelect();
+  renderProfile();
+  renderAdapterInfo();
+  renderDtc();
+  renderDiag();
+  renderLive();
+  setConnState('disconnected', 'Aucun adaptateur appairé.');
+  updateLiveButton();
+
+  Log.add('info', `CarBuddy OBD2 prêt — profil « ${state.profile.name} ».`);
+  if (!('bluetooth' in navigator)) Log.add('warn', 'Web Bluetooth non disponible dans ce navigateur : seul le mode démo fonctionnera.');
+  else if (!window.isSecureContext) Log.add('warn', 'Page non sécurisée : Web Bluetooth exige HTTPS ou localhost.');
+  else Log.add('info', 'Web Bluetooth disponible.');
+
+  // Onglet demandé par un raccourci de l'application installée (?tab=live), sinon le dernier utilisé.
+  let tab = new URLSearchParams(location.search).get('tab');
+  if (!tab) try { tab = localStorage.getItem('carbuddy.tab'); } catch { /* ignoré */ }
+  showTab(tab && $(`#tab-${tab}`) ? tab : 'vehicle');
+  refreshIcons();
+  initPwa();
+}
+
+/* =====================================================================
+ * Application installable (PWA) : service worker + bouton « Installer »
+ * ===================================================================== */
+let installPrompt = null;
+
+// L'événement peut survenir très tôt : on l'écoute dès le chargement du script.
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  $('#btn-install').classList.remove('hidden');
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  $('#btn-install').classList.add('hidden');
+  Log.add('ok', 'Application installée sur cet appareil.');
+  toast('CarBuddy est installé : lancez-le depuis l\'écran d\'accueil.', 'ok');
+});
+
+function initPwa() {
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  if (standalone) Log.add('info', 'Lancé en mode application installée.');
+
+  $('#btn-install').addEventListener('click', async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    Log.add('info', `Installation ${outcome === 'accepted' ? 'acceptée' : 'refusée'}.`);
+    installPrompt = null;
+    $('#btn-install').classList.add('hidden');
+  });
+
+  if (!('serviceWorker' in navigator)) { Log.add('warn', 'Service worker non supporté : pas d\'installation ni de mode hors ligne.'); return; }
+  if (!window.isSecureContext) { Log.add('warn', 'Installation impossible : la page doit être servie en HTTPS (ou localhost).'); return; }
+  navigator.serviceWorker.register('./sw.js')
+    .then((reg) => Log.add('info', `Mode hors ligne prêt (service worker, portée ${new URL(reg.scope).pathname}).`))
+    .catch((e) => Log.add('warn', `Service worker non enregistré : ${e.message}`));
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
