@@ -347,12 +347,13 @@
               <li>03 · codes confirmés (mémorisés)</li>
               <li>07 · codes en attente (cycle en cours)</li>
               <li>0A · codes permanents (non effaçables)</li>
+              <li>19 02 · mémoire constructeur (UDS)</li>
               <li>04 · effacement codes + données figées</li>
             </ul>
           </div>
           <div class="rounded-xl border border-red-500/30 bg-red-500/5 p-3 text-xs text-zinc-400">
             <p class="flex items-center gap-1.5 font-semibold text-red-300"><i data-lucide="triangle-alert" class="h-3.5 w-3.5"></i>Voyant rouge au tableau de bord ?</p>
-            <p class="mt-1">Les codes OBD lus ici ne concernent que le <b class="text-zinc-300">calculateur moteur</b> (voyant moteur orange). Les voyants rouges — pression d'huile, charge batterie, température d'eau, freins, airbag, alerte « STOP » — viennent souvent d'un simple contacteur ou d'autres calculateurs (ABS, airbag, carrosserie) : ils ne laissent généralement <b class="text-zinc-300">aucun code</b> lisible en OBD standard.</p>
+            <p class="mt-1">Un <b class="text-zinc-300">voyant moteur rouge</b> signale un défaut grave (moteur souvent bridé en mode dégradé) : son code est parfois rangé uniquement dans la <b class="text-zinc-300">mémoire constructeur</b> ci-contre, pas en mode 03. Les autres voyants rouges — pression d'huile, charge batterie, température d'eau, freins, airbag, alerte « STOP » — viennent souvent d'un simple contacteur ou d'autres calculateurs (ABS, airbag, carrosserie) : ils ne laissent généralement <b class="text-zinc-300">aucun code</b> lisible en OBD standard.</p>
             <p class="mt-1">Ce que l'app peut vérifier : <b class="text-zinc-300">température d'eau</b> et <b class="text-zinc-300">tension batterie</b> (13,8 – 14,7 V moteur tournant) dans l'onglet Live. Huile ou température : arrêtez le moteur et contrôlez les niveaux avant de rouler.</p>
           </div>
         </div>
@@ -370,6 +371,14 @@
               <span id="dtc-pending-count" class="chip border-zinc-700 text-zinc-400">—</span>
             </div>
             <ul id="dtc-pending" class="mt-3 space-y-2"></ul>
+          </div>
+          <div class="card">
+            <div class="flex items-center justify-between">
+              <h2 class="card-title"><i data-lucide="factory" class="h-4 w-4 text-red-400"></i>Mémoire constructeur <span class="font-mono text-zinc-600">(UDS 19 02)</span></h2>
+              <span id="dtc-uds-count" class="chip border-zinc-700 text-zinc-400">—</span>
+            </div>
+            <p class="mt-1 text-xs text-zinc-500">Lecture directe de la mémoire défauts du calculateur moteur, comme le font les applis avancées. Contient des codes que le mode 03 ne renvoie pas toujours (voyant moteur rouge notamment).</p>
+            <ul id="dtc-uds" class="mt-3 space-y-2"></ul>
           </div>
           <div class="card">
             <div class="flex items-center justify-between">
@@ -1046,6 +1055,7 @@ class SimTransport {
     this.connected = false;
     this.stored = ['0299', '2463', '0401'];
     this.pending = ['0101'];
+    this.mfr = [['2263', 0x00, 0x8B]]; // mémoire constructeur (UDS) : code invisible en mode 03
     this.baro = 100;
     this.vin = 'JN1DEMT32F0000001'; // VIN fictif de démonstration
     this.s = {
@@ -1061,7 +1071,7 @@ class SimTransport {
     };
     this._resetFlags();
   }
-  _resetFlags() { this.echo = true; this.spaces = true; this.headers = false; this.searched = false; }
+  _resetFlags() { this.echo = true; this.spaces = true; this.headers = false; this.searched = false; this.header = '7DF'; }
 
   async connect() {
     Log.add('info', 'Mode démo : simulateur ELM327 (aucun matériel requis).');
@@ -1272,8 +1282,13 @@ class SimTransport {
       ecm.push([0x47, this.pending.length, ...this._dtcBytes(this.pending)]);
     } else if (mode === '0A') {
       ecm.push([0x4A, this.stored.length, ...this._dtcBytes(this.stored)]);
+    } else if (mode === '19') {
+      // UDS ReadDTCInformation : uniquement en adressage physique (7E0), sous-fonction 02
+      if (this.header !== '7E0' || cmd.slice(2, 4) !== '02') return null;
+      const dtcs = [...this.stored.map((c) => [c, 0x00, 0x08]), ...this.mfr];
+      ecm.push([0x59, 0x02, 0xFF, ...dtcs.flatMap(([c, ftb, st]) => [...this._dtcBytes([c]), ftb, st])]);
     } else if (mode === '04') {
-      this.stored = []; this.pending = [];
+      this.stored = []; this.pending = []; this.mfr = [];
       ecm.push([0x44]);
     } else return null;
 
@@ -1299,6 +1314,7 @@ class SimTransport {
       else if (/^S[01]$/.test(at)) { this.spaces = at === 'S1'; out = ['OK']; }
       else if (/^H[01]$/.test(at)) { this.headers = at === 'H1'; out = ['OK']; }
       else if (/^SP[0-9A-C]$/.test(at)) { this.searched = false; out = ['OK']; }
+      else if (/^SH[0-9A-F]{3}$/.test(at)) { this.header = at.slice(2); out = ['OK']; }
       else if (/^(L[01]|AT[012]|ST[0-9A-F]{2}|D|PC|CAF[01]|M[01])$/.test(at)) out = ['OK'];
       else out = ['?'];
     } else if (/^[0-9A-F]+$/.test(cmd) && cmd.length >= 2) {
@@ -1633,6 +1649,38 @@ class ELM327 {
       }
     }
     return out;
+  }
+
+  /**
+   * Mémoire défauts « constructeur » du calculateur moteur : UDS 19 02 FF en adressage physique (7E0 → 7E8).
+   * Les calculateurs Renault-Nissan y rangent des codes que le mode 03 ne renvoie pas toujours.
+   * Renvoie null si non pris en charge (CAN 11 bits uniquement).
+   */
+  async readUdsDtcs() {
+    if (!this.isCan || this.protocol === 7 || this.protocol === 9) return null;
+    await this.send('ATSH7E0');
+    try {
+      let lines;
+      try { lines = await this.send('1902FF', { timeout: 5000 }); }
+      catch (e) { if (e.code === 'NO_DATA') return null; throw e; }
+      const msgs = parseResponse(lines, this.protocol);
+      const pos = msgs.find((m) => m.data[0] === 0x59 && m.data[1] === 0x02);
+      if (!pos) {
+        const neg = msgs.find((m) => m.data[0] === 0x7f && m.data[1] === 0x19);
+        Log.add('warn', neg ? `UDS 19 02 refusé par le calculateur (code 0x${hex2(neg.data[2] ?? 0)}).` : `UDS 19 02 : réponse inattendue ${lines.join(' ')}`);
+        return null;
+      }
+      // [59, 02, masque, puis par code : octet haut, octet bas, type de panne, statut]
+      const out = [];
+      for (let i = 3; i + 3 < pos.data.length; i += 4) {
+        const [a, b, ftb, status] = pos.data.slice(i, i + 4);
+        if ((!a && !b) || !(status & 0x8F)) continue; // ignore les codes jamais en défaut
+        out.push({ code: decodeDtc(a, b), ftb, status, ecu: pos.header });
+      }
+      return out;
+    } finally {
+      await this.send('ATSH7DF').catch(() => {}); // retour à l'adressage OBD fonctionnel
+    }
   }
 
   async clearDtcs() {
@@ -2109,7 +2157,7 @@ const state = {
   hist: {}, minmax: {},
   noData: {}, disabledPids: new Set(), rawLogged: new Set(),
   rate: 0, renderQueued: false,
-  dtc: { stored: null, pending: null, permanent: null, counters: null, mil: null, at: null, ff: undefined },
+  dtc: { stored: null, pending: null, permanent: null, uds: null, counters: null, mil: null, at: null, ff: undefined },
 };
 const analyzer = new Analyzer();
 
@@ -3353,6 +3401,17 @@ function pidReport() {
 /* =====================================================================
  * Codes défauts
  * ===================================================================== */
+/** Octet de statut UDS (ISO 14229) → libellés lisibles. */
+function udsStatusLabels(st) {
+  const out = [];
+  if (st & 0x01) out.push('actif maintenant');
+  if (st & 0x08) out.push('confirmé');
+  if (st & 0x04) out.push('en attente');
+  if (st & 0x80) out.push('voyant demandé');
+  if (!(st & 0x01) && (st & 0x20)) out.push('apparu depuis le dernier effacement');
+  return out;
+}
+
 function renderDtcCounters(c) {
   const box = $('#dtc-counters');
   if (!c) { box.innerHTML = ''; box.classList.add('hidden'); return; }
@@ -3398,14 +3457,16 @@ function renderDtc() {
     if (arr == null) { $(el).innerHTML = '<li class="py-4 text-center text-xs text-zinc-500">Pas encore scanné.</li>'; return; }
     if (!arr.length) { $(el).innerHTML = '<li class="flex items-center justify-center gap-2 py-4 text-sm text-emerald-300"><i data-lucide="circle-check" class="h-4 w-4"></i>Aucun code.</li>'; return; }
     const q = encodeURIComponent(`${state.profile.make !== 'Générique' ? state.profile.make + ' ' + state.profile.model + ' ' : ''}`);
-    $(el).innerHTML = arr.map(({ code, ecu }) => {
+    $(el).innerHTML = arr.map(({ code, ecu, status, ftb }) => {
       const info = describeDtc(code);
+      const flags = status == null ? '' : udsStatusLabels(status).map((t) => `<span class="chip border-zinc-700 text-zinc-300">${t}</span>`).join(' ');
       return `
         <li class="flex items-start gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
           <span class="rounded-lg ${color[1]} px-2 py-1 font-mono text-base font-bold">${code}</span>
           <div class="min-w-0 flex-1">
             <p class="text-sm text-zinc-100">${esc(info.desc)}</p>
-            <p class="mt-0.5 text-xs text-zinc-500">${info.sys}${info.sub ? ' · ' + info.sub : ''} · ${info.manufacturer ? 'Code constructeur' : 'Générique SAE'} · ${esc(ecuName(ecu))}</p>
+            <p class="mt-0.5 text-xs text-zinc-500">${info.sys}${info.sub ? ' · ' + info.sub : ''} · ${info.manufacturer ? 'Code constructeur' : 'Générique SAE'} · ${esc(ecuName(ecu))}${ftb ? ` · type de panne 0x${hex2(ftb)}` : ''}</p>
+            ${flags ? `<div class="mt-1.5 flex flex-wrap gap-1">${flags}</div>` : ''}
           </div>
           <a class="btn btn-ghost btn-sm shrink-0" target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(code)}+${q}" title="Rechercher ce code"><i data-lucide="external-link" class="h-3.5 w-3.5"></i></a>
         </li>`;
@@ -3413,6 +3474,10 @@ function renderDtc() {
   };
   list(d.stored, '#dtc-stored', '#dtc-stored-count', ['border-red-500/50 bg-red-500/10 text-red-300', 'bg-red-500/15 text-red-300']);
   list(d.pending, '#dtc-pending', '#dtc-pending-count', ['border-amber-500/40 bg-amber-500/10 text-amber-300', 'bg-amber-500/15 text-amber-300']);
+  if (d.at && d.uds == null) {
+    $('#dtc-uds-count').textContent = 'n/d';
+    $('#dtc-uds').innerHTML = '<li class="py-4 text-center text-xs text-zinc-500">Mémoire constructeur non accessible (voir la console).</li>';
+  } else list(d.uds, '#dtc-uds', '#dtc-uds-count', ['border-red-500/50 bg-red-500/10 text-red-300', 'bg-red-500/15 text-red-300']);
   if (d.at && d.permanent == null) {
     $('#dtc-permanent-count').textContent = 'n/d';
     $('#dtc-permanent').innerHTML = '<li class="py-4 text-center text-xs text-zinc-500">Le calculateur ne répond pas au mode 0A.</li>';
@@ -3481,6 +3546,8 @@ async function scanDtcs() {
     try { state.dtc.permanent = await elm.readDtcs('0A'); }
     catch (e) { Log.add('warn', `Mode 0A (codes permanents) non pris en charge : ${e.message}`); state.dtc.permanent = null; }
     state.dtc.counters = await readDtcCounters(elm);
+    try { state.dtc.uds = await elm.readUdsDtcs(); }
+    catch (e) { Log.add('warn', `Mémoire constructeur (UDS 19 02) : ${e.message}`); state.dtc.uds = null; }
     state.dtc.ff = null;
     if (state.dtc.stored.length) {
       try {
@@ -3491,9 +3558,10 @@ async function scanDtcs() {
     }
     state.dtc.at = new Date();
     const perm = state.dtc.permanent || [];
-    const n = state.dtc.stored.length + state.dtc.pending.length + perm.length;
+    const uds = state.dtc.uds || [];
+    const n = state.dtc.stored.length + state.dtc.pending.length + perm.length + uds.length;
     const codes = (arr) => arr.map((x) => x.code).join(', ');
-    Log.add(n ? 'warn' : 'ok', `Scan terminé : ${state.dtc.stored.length} confirmé(s) [${codes(state.dtc.stored)}], ${state.dtc.pending.length} en attente [${codes(state.dtc.pending)}], ${state.dtc.permanent ? `${perm.length} permanent(s) [${codes(perm)}]` : 'permanents non lus'}`);
+    Log.add(n ? 'warn' : 'ok', `Scan terminé : ${state.dtc.stored.length} confirmé(s) [${codes(state.dtc.stored)}], ${state.dtc.pending.length} en attente [${codes(state.dtc.pending)}], ${state.dtc.permanent ? `${perm.length} permanent(s) [${codes(perm)}]` : 'permanents non lus'}, ${state.dtc.uds ? `${uds.length} constructeur [${uds.map((x) => `${x.code} statut 0x${hex2(x.status)}`).join(', ')}]` : 'mémoire constructeur non lue'}`);
     toast(n ? `${n} code(s) défaut trouvé(s).` : 'Aucun code défaut.', n ? 'warn' : 'ok');
   } catch (e) {
     Log.add('error', `Scan des défauts impossible : ${e.message}`);
