@@ -1299,6 +1299,8 @@ const ELM_ERRORS = [
   [/^ERROR$/, 'ERROR', 'Erreur adaptateur'],
 ];
 
+const BUS_RETRY_CODES = ['CAN_ERROR', 'BUS_ERROR', 'DATA_ERROR', 'RX_ERROR', 'STOPPED', 'BUFFER_FULL'];
+
 const hexBytes = (s) => { const out = []; for (let i = 0; i + 1 < s.length; i += 2) out.push(parseInt(s.slice(i, i + 2), 16)); return out; };
 
 /**
@@ -1507,6 +1509,12 @@ class ELM327 {
         this.fast = false;
         Log.add('warn', 'Requêtes rapides non supportées par l\'adaptateur : désactivées.');
         lines = await this.send(`01${hx}`, { live, timeout: 2000 });
+      } else if (BUS_RETRY_CODES.includes(e.code)) {
+        // Erreurs de bus ponctuelles (fréquentes avec les adaptateurs bon marché) : une seconde chance.
+        this.busErrors = (this.busErrors || 0) + 1;
+        Log.add('warn', `${e.message} — nouvel essai`, { live: true });
+        await sleep(60);
+        lines = await this.send(`01${hx}${fast ? '1' : ''}`, { live, timeout: 2000 });
       } else throw e;
     }
     const msgs = parseResponse(lines, this.protocol);
@@ -1696,8 +1704,10 @@ class Analyzer {
           const m = mean(w.map((x) => x.map));
           if (p.map.idleRef === 'baro') {
             const d = m - baro;
-            const value = `${fmtNum(m)} kPa (${d >= 0 ? '+' : ''}${fmtNum(d)} vs atmo)`;
-            if (d > p.map.idleMax) R.mapIdle = { status: 'warn', value, message: 'Pression d\'admission trop élevée au ralenti.',
+            const value = `${fmtNum(m)} kPa (${d >= 0 ? '+' : ''}${fmtNum(d)} vs atmo) · PID 01${hex2(state.mapSource)}`;
+            if (m < 50) R.mapIdle = { status: 'alert', value, message: `Pression d'admission physiquement impossible au ralenti (${fmtNum(m)} kPa) : capteur ou lecture défaillant.`,
+              hint: 'Capteur de pression de suralimentation débranché, défaillant ou câblage coupé / en court-circuit (codes P0107, P0237 attendus) — le calculateur passe alors en mode dégradé et bride la puissance. Vérifiez aussi dans la Console les « octets bruts » du PID pour écarter une erreur de lecture.' };
+            else if (d > p.map.idleMax) R.mapIdle = { status: 'warn', value, message: 'Pression d\'admission trop élevée au ralenti.',
               hint: 'Géométrie variable du turbo bloquée en position fermée, capteur MAP dérivé, échappement / FAP colmaté.' };
             else if (d < p.map.idleMin) R.mapIdle = { status: 'warn', value, message: 'Pression d\'admission sous la pression atmosphérique au ralenti.',
               hint: 'Filtre à air colmaté, volet d\'admission (doseur) bloqué, capteur MAP dérivé.' };
@@ -2353,7 +2363,7 @@ async function readAndStore(pid) {
   const d = await state.elm.readPid(pid, { live: true });
   if (d.length < def.len) throw new ElmError('BAD_RESPONSE', `01${hex2(pid)} : ${d.length} octet(s) reçu(s), ${def.len} attendu(s)`);
   const vals = def.decode(d);
-  if (def.exp && !state.rawLogged.has(pid)) {
+  if (!state.rawLogged.has(pid)) {
     state.rawLogged.add(pid);
     const decoded = Object.entries(vals).map(([k, v]) => `${k}=${typeof v === 'number' ? fmtNum(v, 1) : v}`).join(', ');
     Log.add('info', `PID 01${hex2(pid)} (${PID_NAMES[pid] || '?'}) — octets bruts ${d.map(hex2).join(' ')} → ${decoded}`);
@@ -2365,13 +2375,46 @@ async function readAndStore(pid) {
   // Source de MAP étendue : on bascule sur la suivante si le capteur n'est pas renseigné.
   if (pid === state.mapSource && pid !== 0x0B) {
     const m = pid === 0x87 ? vals.mapExt : vals.boost;
-    if (m != null) { state.values.map = m; pushHist('map', m); }
+    if (m != null && m >= 20 && m <= 400) { state.values.map = m; pushHist('map', m); }
     else {
-      state.mapSource = pid === 0x87 && state.elm.supports(0x70) ? 0x70 : 0x0B;
-      Log.add('warn', `PID 01${hex2(pid)} sans capteur de pression A : MAP lue via 01${hex2(state.mapSource)}.`);
+      state.disabledPids.add(pid);
+      state.mapSource = pid === 0x87 && state.elm.supports(0x70) && !state.disabledPids.has(0x70) ? 0x70 : 0x0B;
+      Log.add('warn', `PID 01${hex2(pid)} : pression ${m == null ? 'non renseignée' : `invraisemblable (${fmtNum(m, 1)} kPa)`} — MAP lue via 01${hex2(state.mapSource)}.`);
     }
   }
   return vals;
+}
+
+/**
+ * Contrôle croisé : chaque PID étendu est comparé à son équivalent standard (lu au même moment).
+ * Un PID incohérent (décodage différent sur ce calculateur) est écarté pour ne pas fausser le diagnostic.
+ */
+const CROSS_CHECKS = [
+  { ext: 0x87, key: 'mapExt', ref: 0x0B, refKey: 'map', tol: () => 15, unit: 'kPa' },
+  { ext: 0x70, key: 'boost', ref: 0x0B, refKey: 'map', tol: () => 15, unit: 'kPa' },
+  { ext: 0x6D, key: 'rail', ref: 0x23, refKey: 'rail', tol: (r) => Math.max(60, r * 0.2), unit: 'bar' },
+  { ext: 0x66, key: 'maf', ref: 0x10, refKey: 'maf', tol: (r) => Math.max(3, r * 0.2), unit: 'g/s' },
+  { ext: 0x69, key: 'egrCmd', ref: 0x2C, refKey: 'egrCmd', tol: () => 10, unit: '%' },
+];
+
+async function validateExtendedPids(elm) {
+  if (!elm.supported?.size) return;
+  for (const c of CROSS_CHECKS) {
+    if (!elm.supports(c.ext) || !elm.supports(c.ref) || state.disabledPids.has(c.ext)) continue;
+    try {
+      const rd = await elm.readPid(c.ref);
+      const xd = await elm.readPid(c.ext);
+      const ref = PID_DEFS[c.ref].decode(rd)[c.refKey];
+      const ext = xd.length >= PID_DEFS[c.ext].len ? PID_DEFS[c.ext].decode(xd)[c.key] : null;
+      const raw = `01${hex2(c.ref)} [${rd.map(hex2).join(' ')}] = ${fmtNum(ref, 1)} ${c.unit} · 01${hex2(c.ext)} [${xd.map(hex2).join(' ')}] = ${ext == null ? '—' : fmtNum(ext, 1) + ' ' + c.unit}`;
+      if (ext == null) { Log.add('info', `Contrôle 01${hex2(c.ext)} : valeur non renseignée par le calculateur (${raw}).`); continue; }
+      if (Math.abs(ext - ref) <= c.tol(ref)) Log.add('info', `Contrôle 01${hex2(c.ext)} cohérent : ${raw}`);
+      else {
+        state.disabledPids.add(c.ext);
+        Log.add('warn', `Contrôle 01${hex2(c.ext)} INCOHÉRENT, PID écarté : ${raw}`);
+      }
+    } catch (e) { Log.add('warn', `Contrôle 01${hex2(c.ext)} impossible : ${e.message}`); }
+  }
 }
 
 /** Liste des PIDs d'un cycle Live : essentiels à chaque cycle, diagnostic un cycle sur deux, le reste en alternance. */
@@ -2406,9 +2449,12 @@ async function startLive() {
   }
   state.live = true;
   state.noData = {};
-  state.mapSource = elm.supports(0x87) && elm.supported?.size ? 0x87 : elm.supports(0x70) && elm.supported?.size ? 0x70 : 0x0B;
-  Log.add('info', `Pression d'admission lue via le PID 01${hex2(state.mapSource)}${state.mapSource === 0x0B ? ' (plafonné à 255 kPa)' : ' (au-delà de 255 kPa)'}.`);
   updateLiveButton();
+  await validateExtendedPids(elm);
+  if (!state.live || state.elm !== elm) return; // arrêté ou déconnecté pendant le contrôle
+  const usable = (pid) => elm.supported?.size && elm.supports(pid) && !state.disabledPids.has(pid);
+  state.mapSource = usable(0x87) ? 0x87 : usable(0x70) ? 0x70 : 0x0B;
+  Log.add('info', `Pression d'admission lue via le PID 01${hex2(state.mapSource)}${state.mapSource === 0x0B ? ' (plafonné à 255 kPa)' : ' (au-delà de 255 kPa)'}.`);
   keepAwake(true);
   Log.add('info', 'Mode Live démarré.');
 
