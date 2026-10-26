@@ -338,6 +338,7 @@
             <button id="btn-dtc-clear" class="btn btn-danger"><i data-lucide="eraser" class="h-4 w-4"></i>Effacer les codes défauts</button>
           </div>
           <p id="dtc-last" class="text-xs text-zinc-500">Aucun scan effectué.</p>
+          <div id="dtc-counters" class="hidden rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 text-xs"></div>
           <div class="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-400">
             <p class="font-semibold text-zinc-300">Modes OBD utilisés</p>
             <ul class="mt-1 space-y-0.5 font-mono">
@@ -345,8 +346,14 @@
               <li>02 · données figées au moment du défaut</li>
               <li>03 · codes confirmés (mémorisés)</li>
               <li>07 · codes en attente (cycle en cours)</li>
+              <li>0A · codes permanents (non effaçables)</li>
               <li>04 · effacement codes + données figées</li>
             </ul>
+          </div>
+          <div class="rounded-xl border border-red-500/30 bg-red-500/5 p-3 text-xs text-zinc-400">
+            <p class="flex items-center gap-1.5 font-semibold text-red-300"><i data-lucide="triangle-alert" class="h-3.5 w-3.5"></i>Voyant rouge au tableau de bord ?</p>
+            <p class="mt-1">Les codes OBD lus ici ne concernent que le <b class="text-zinc-300">calculateur moteur</b> (voyant moteur orange). Les voyants rouges — pression d'huile, charge batterie, température d'eau, freins, airbag, alerte « STOP » — viennent souvent d'un simple contacteur ou d'autres calculateurs (ABS, airbag, carrosserie) : ils ne laissent généralement <b class="text-zinc-300">aucun code</b> lisible en OBD standard.</p>
+            <p class="mt-1">Ce que l'app peut vérifier : <b class="text-zinc-300">température d'eau</b> et <b class="text-zinc-300">tension batterie</b> (13,8 – 14,7 V moteur tournant) dans l'onglet Live. Huile ou température : arrêtez le moteur et contrôlez les niveaux avant de rouler.</p>
           </div>
         </div>
         <div class="space-y-4 lg:col-span-2">
@@ -363,6 +370,14 @@
               <span id="dtc-pending-count" class="chip border-zinc-700 text-zinc-400">—</span>
             </div>
             <ul id="dtc-pending" class="mt-3 space-y-2"></ul>
+          </div>
+          <div class="card">
+            <div class="flex items-center justify-between">
+              <h2 class="card-title"><i data-lucide="lock" class="h-4 w-4 text-fuchsia-400"></i>Codes permanents <span class="font-mono text-zinc-600">(mode 0A)</span></h2>
+              <span id="dtc-permanent-count" class="chip border-zinc-700 text-zinc-400">—</span>
+            </div>
+            <p class="mt-1 text-xs text-zinc-500">Gardés par le calculateur même après un effacement ou un débranchement batterie, jusqu'à ce qu'il constate lui-même que le défaut a disparu.</p>
+            <ul id="dtc-permanent" class="mt-3 space-y-2"></ul>
           </div>
           <div class="card">
             <div class="flex items-center justify-between gap-2">
@@ -1196,7 +1211,10 @@ class SimTransport {
       case 0x10: return w16(st.maf * 100);
       case 0x1C: return [0x06];
       case 0x1F: return w16((performance.now() - this.t0) / 1000);
-      case 0x21: return [0x00, 0x2A];
+      case 0x21: return w16(this.stored.length ? 42 : 0);
+      case 0x30: return [57];
+      case 0x31: return w16(1830);
+      case 0x4D: return w16(this.stored.length ? 35 : 0);
       case 0x23: return w16(st.rail * 10);
       case 0x2C: return [pct(st.egrCmd)];
       case 0x2D: return [Math.round((egrErr + 100) * 1.28)];
@@ -1225,8 +1243,8 @@ class SimTransport {
       const pid = parseInt(cmd.slice(2, 4), 16);
       const masks = {
         0x00: [0x01, 0x04, 0x05, 0x0B, 0x0C, 0x0D, 0x0F, 0x10, 0x1C, 0x1F, 0x20],
-        0x20: [0x21, 0x23, 0x2C, 0x2D, 0x33, 0x40],
-        0x40: [0x49, 0x51, 0x5E, 0x60],
+        0x20: [0x21, 0x23, 0x2C, 0x2D, 0x30, 0x31, 0x33, 0x40],
+        0x40: [0x49, 0x4D, 0x51, 0x5E, 0x60],
         0x60: [0x69, 0x6D, 0x70, 0x71, 0x77, 0x7A, 0x7C, 0x80],
         0x80: [0x87, 0x8B],
       };
@@ -1252,6 +1270,8 @@ class SimTransport {
       ecm.push([0x43, this.stored.length, ...this._dtcBytes(this.stored)]);
     } else if (mode === '07') {
       ecm.push([0x47, this.pending.length, ...this._dtcBytes(this.pending)]);
+    } else if (mode === '0A') {
+      ecm.push([0x4A, this.stored.length, ...this._dtcBytes(this.stored)]);
     } else if (mode === '04') {
       this.stored = []; this.pending = [];
       ecm.push([0x44]);
@@ -2089,7 +2109,7 @@ const state = {
   hist: {}, minmax: {},
   noData: {}, disabledPids: new Set(), rawLogged: new Set(),
   rate: 0, renderQueued: false,
-  dtc: { stored: null, pending: null, mil: null, at: null, ff: undefined },
+  dtc: { stored: null, pending: null, permanent: null, counters: null, mil: null, at: null, ff: undefined },
 };
 const analyzer = new Analyzer();
 
@@ -3333,6 +3353,27 @@ function pidReport() {
 /* =====================================================================
  * Codes défauts
  * ===================================================================== */
+function renderDtcCounters(c) {
+  const box = $('#dtc-counters');
+  if (!c) { box.innerHTML = ''; box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const row = (label, v, unit, warn) => v == null ? '' : `
+    <div class="flex items-baseline justify-between gap-2">
+      <span class="text-zinc-400">${label}</span>
+      <span class="font-mono ${warn ? 'text-amber-300' : 'text-zinc-200'}">${fmtNum(v, 0)} ${unit}</span>
+    </div>`;
+  const notes = [];
+  if (c.milKm > 0 || c.milMin > 0) notes.push('Le voyant moteur a été allumé récemment, même s\'il est éteint maintenant.');
+  if (c.clearKm != null && c.clearKm < 200) notes.push('Les codes ont été effacés il y a peu (outil de diagnostic, garage ou batterie débranchée) : l\'historique est presque vide.');
+  box.innerHTML = `
+    <p class="mb-1.5 font-semibold text-zinc-300">Historique du calculateur moteur</p>
+    ${row('Distance voyant allumé', c.milKm, 'km', c.milKm > 0)}
+    ${row('Durée voyant allumé', c.milMin, 'min', c.milMin > 0)}
+    ${row('Distance depuis effacement', c.clearKm, 'km', c.clearKm < 200)}
+    ${row('Démarrages depuis effacement', c.clearWarmups, '', false)}
+    ${notes.map((t) => `<p class="mt-2 text-amber-300">${t}</p>`).join('')}`;
+}
+
 function renderDtc() {
   const d = state.dtc;
   const mil = $('#mil-status');
@@ -3350,6 +3391,7 @@ function renderDtc() {
         </div>
       </div>`;
   }
+  renderDtcCounters(d.counters);
   const list = (arr, el, countEl, color) => {
     $(countEl).textContent = arr == null ? '—' : `${arr.length} code${arr.length > 1 ? 's' : ''}`;
     $(countEl).className = `chip ${arr?.length ? `${color[0]}` : 'border-zinc-700 text-zinc-400'}`;
@@ -3371,6 +3413,10 @@ function renderDtc() {
   };
   list(d.stored, '#dtc-stored', '#dtc-stored-count', ['border-red-500/50 bg-red-500/10 text-red-300', 'bg-red-500/15 text-red-300']);
   list(d.pending, '#dtc-pending', '#dtc-pending-count', ['border-amber-500/40 bg-amber-500/10 text-amber-300', 'bg-amber-500/15 text-amber-300']);
+  if (d.at && d.permanent == null) {
+    $('#dtc-permanent-count').textContent = 'n/d';
+    $('#dtc-permanent').innerHTML = '<li class="py-4 text-center text-xs text-zinc-500">Le calculateur ne répond pas au mode 0A.</li>';
+  } else list(d.permanent, '#dtc-permanent', '#dtc-permanent-count', ['border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-300', 'bg-fuchsia-500/15 text-fuchsia-300']);
   $('#dtc-last').textContent = d.at ? `Dernier scan : ${d.at.toLocaleString('fr-FR')}` : 'Aucun scan effectué.';
 
   const ff = d.ff;
@@ -3393,6 +3439,27 @@ function renderDtc() {
   refreshIcons();
 }
 
+/**
+ * Compteurs liés aux défauts (mode 01) : distance / durée voyant allumé, distance et démarrages
+ * depuis le dernier effacement. Révèlent un voyant allumé puis éteint, ou un effacement récent.
+ */
+const DTC_COUNTERS = [
+  [0x21, 'milKm', (d) => u16(d[0], d[1])],
+  [0x4D, 'milMin', (d) => u16(d[0], d[1])],
+  [0x31, 'clearKm', (d) => u16(d[0], d[1])],
+  [0x30, 'clearWarmups', (d) => d[0]],
+];
+async function readDtcCounters(elm) {
+  const out = {};
+  for (const [pid, key, decode] of DTC_COUNTERS) {
+    if (!elm.supports(pid)) continue;
+    try { out[key] = decode(await elm.readPid(pid)); }
+    catch (e) { Log.add('warn', `Compteur 01${hex2(pid)} : ${e.message}`); }
+  }
+  if (Object.keys(out).length) Log.add('info', `Compteurs défauts : ${Object.entries(out).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+  return Object.keys(out).length ? out : null;
+}
+
 async function scanDtcs() {
   const elm = state.elm;
   if (!elm) { toast('Connectez d\'abord l\'adaptateur.', 'warn'); return; }
@@ -3410,6 +3477,10 @@ async function scanDtcs() {
     state.dtc.stored = await elm.readDtcs('03');
     try { state.dtc.pending = await elm.readDtcs('07'); }
     catch (e) { Log.add('warn', `Mode 07 : ${e.message}`); state.dtc.pending = []; }
+    // Codes permanents : ne s'effacent ni par le mode 04 ni en débranchant la batterie.
+    try { state.dtc.permanent = await elm.readDtcs('0A'); }
+    catch (e) { Log.add('warn', `Mode 0A (codes permanents) non pris en charge : ${e.message}`); state.dtc.permanent = null; }
+    state.dtc.counters = await readDtcCounters(elm);
     state.dtc.ff = null;
     if (state.dtc.stored.length) {
       try {
@@ -3419,8 +3490,10 @@ async function scanDtcs() {
       } catch (e) { Log.add('warn', `Données figées (mode 02) : ${e.message}`); }
     }
     state.dtc.at = new Date();
-    const n = state.dtc.stored.length + state.dtc.pending.length;
-    Log.add(n ? 'warn' : 'ok', `Scan terminé : ${state.dtc.stored.length} confirmé(s) [${state.dtc.stored.map((x) => x.code).join(', ')}], ${state.dtc.pending.length} en attente [${state.dtc.pending.map((x) => x.code).join(', ')}]`);
+    const perm = state.dtc.permanent || [];
+    const n = state.dtc.stored.length + state.dtc.pending.length + perm.length;
+    const codes = (arr) => arr.map((x) => x.code).join(', ');
+    Log.add(n ? 'warn' : 'ok', `Scan terminé : ${state.dtc.stored.length} confirmé(s) [${codes(state.dtc.stored)}], ${state.dtc.pending.length} en attente [${codes(state.dtc.pending)}], ${state.dtc.permanent ? `${perm.length} permanent(s) [${codes(perm)}]` : 'permanents non lus'}`);
     toast(n ? `${n} code(s) défaut trouvé(s).` : 'Aucun code défaut.', n ? 'warn' : 'ok');
   } catch (e) {
     Log.add('error', `Scan des défauts impossible : ${e.message}`);
