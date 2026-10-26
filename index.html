@@ -1778,7 +1778,7 @@ class Analyzer {
     if (!turbo) R.overboost = { status: 'na', value: '—', message: 'Non applicable (moteur atmosphérique).' };
     else if (running && s.map != null) {
       const w = this._win(1).filter((x) => x.map != null);
-      const saturated = state.mapSource === 0x0B && s.map >= 254;
+      const saturated = state.mapSource === 0x0B && s.map >= 254 * state.mapScale;
       const over = w.length >= 2 && w.every((x) => x.map > p.map.max);
       if (saturated) R.overboost = { status: 'info', value: '≥ 255 kPa', message: 'Pression au plafond du PID standard 010B (255 kPa) : une surpression ne peut pas être mesurée avec ce PID. Ce n\'est pas une anomalie en soi.' };
       else R.overboost = over
@@ -2052,6 +2052,7 @@ const state = {
   values: { rpm: null, map: null, ect: null, speed: null, load: null, volt: null, baro: null },
   baroSource: 'défaut',
   mapSource: 0x0B,            // PID utilisé pour la MAP : 0187 (étendue), 0170 (suralimentation) ou 010B
+  mapScale: 1, scalingChecked: false, // kPa par unité du PID 010B (modifiable par le PID 014F)
   hist: {}, minmax: {},
   noData: {}, disabledPids: new Set(), rawLogged: new Set(),
   rate: 0, renderQueued: false,
@@ -2070,7 +2071,8 @@ const bit = (d, n) => (d[0] >> n) & 1; // octet A des PIDs étendus : capteurs d
 const PID_DEFS = {
   0x04: { len: 1, decode: (d) => ({ load: (d[0] * 100) / 255 }) },
   0x05: { len: 1, decode: (d) => ({ ect: d[0] - 40 }) },
-  0x0B: { len: 1, decode: (d) => ({ map: d[0] }) },
+  0x0B: { len: 1, decode: (d) => ({ map: d[0] * state.mapScale }) },   // échelle éventuellement modifiée par le PID 014F
+  0x4F: { len: 4, decode: (d) => ({ mapMax: d[3] * 10 }) },
   0x0C: { len: 2, decode: (d) => ({ rpm: u16(d[0], d[1]) / 4 }) },
   0x0D: { len: 1, decode: (d) => ({ speed: d[0] }) },
   0x0F: { len: 1, decode: (d) => ({ iat: d[0] - 40 }) },
@@ -2123,7 +2125,7 @@ const PID_NAMES = {
   0x30: 'Chauffes depuis effacement', 0x31: 'Distance depuis effacement', 0x33: 'Pression atmosphérique',
   0x41: 'Moniteurs du cycle', 0x42: 'Tension calculateur', 0x45: 'Papillon relatif', 0x46: 'Temp. ambiante',
   0x47: 'Papillon B', 0x49: 'Pédale D', 0x4A: 'Pédale E', 0x4C: 'Papillon consigne', 0x4D: 'Temps avec MIL',
-  0x4E: 'Temps depuis effacement', 0x51: 'Type de carburant', 0x5C: 'Temp. huile', 0x5E: 'Débit carburant',
+  0x4E: 'Temps depuis effacement', 0x4F: 'Valeurs maxi (échelle MAP)', 0x50: 'Valeur maxi débit d\'air', 0x51: 'Type de carburant', 0x5C: 'Temp. huile', 0x5E: 'Débit carburant',
   0x61: 'Couple demandé', 0x62: 'Couple réel', 0x63: 'Couple de référence', 0x64: 'Points de couple',
   0x65: 'Entrées/sorties auxiliaires', 0x66: 'Débit d\'air (MAF étendu)', 0x67: 'Temp. liquide (étendue)',
   0x68: 'Temp. air admission (étendue)', 0x69: 'EGR consigne / réel', 0x6A: 'Volet d\'admission consigne / réel',
@@ -2281,6 +2283,7 @@ async function connectAdapter({ reuse = false } = {}) {
     elm.fast = $('#opt-fast').checked;
     state.elm = elm;
     state.disabledPids = new Set(); state.rawLogged = new Set();
+    state.mapScale = 1; state.scalingChecked = false;
     await elm.initialize(setConnDetail);
     Log.add('ok', `Adaptateur initialisé : ${elm.version || 'version inconnue'}`);
     await updateVoltage();
@@ -2386,6 +2389,35 @@ async function readAndStore(pid) {
 }
 
 /**
+ * Échelle du PID 010B. Par défaut 1 kPa par unité (0 – 255 kPa), mais un calculateur peut annoncer une
+ * MAP maximale plus élevée dans le PID 014F (octet D × 10 kPa) : 010B vaut alors A × maxi / 255.
+ * Sans PID 014F, on déduit l'échelle si 010B × 10 correspond à la pression atmosphérique (moteur arrêté / ralenti).
+ */
+async function ensureMapScaling(elm) {
+  if (state.scalingChecked || !elm.supported?.size) return;
+  state.scalingChecked = true;
+  try {
+    if (elm.supports(0x4F)) {
+      const d = await elm.readPid(0x4F);
+      const max = d.length >= 4 ? d[3] * 10 : 0;
+      Log.add('info', `PID 014F — octets bruts ${d.map(hex2).join(' ')} → MAP maximale annoncée : ${max ? fmtNum(max) + ' kPa' : 'non renseignée'}`);
+      if (max > 255) {
+        state.mapScale = max / 255;
+        Log.add('ok', `Échelle du PID 010B ajustée : 1 unité = ${fmtNum(state.mapScale, 2)} kPa (maxi ${fmtNum(max)} kPa).`);
+      }
+      return;
+    }
+    if (!elm.supports(0x33)) return;
+    const raw = (await elm.readPid(0x0B))[0];
+    const baro = (await elm.readPid(0x33))[0];
+    if (raw < 30 && Math.abs(raw * 10 - baro) <= 15) {
+      state.mapScale = 10;
+      Log.add('warn', `PID 010B = ${raw} pour une pression atmosphérique de ${baro} kPa : échelle ×10 appliquée (déduite, PID 014F absent).`);
+    }
+  } catch (e) { Log.add('warn', `Échelle MAP (014F) : ${e.message}`); }
+}
+
+/**
  * Contrôle croisé : chaque PID étendu est comparé à son équivalent standard (lu au même moment).
  * Un PID incohérent (décodage différent sur ce calculateur) est écarté pour ne pas fausser le diagnostic.
  */
@@ -2450,11 +2482,12 @@ async function startLive() {
   state.live = true;
   state.noData = {};
   updateLiveButton();
+  await ensureMapScaling(elm);
   await validateExtendedPids(elm);
   if (!state.live || state.elm !== elm) return; // arrêté ou déconnecté pendant le contrôle
   const usable = (pid) => elm.supported?.size && elm.supports(pid) && !state.disabledPids.has(pid);
   state.mapSource = usable(0x87) ? 0x87 : usable(0x70) ? 0x70 : 0x0B;
-  Log.add('info', `Pression d'admission lue via le PID 01${hex2(state.mapSource)}${state.mapSource === 0x0B ? ' (plafonné à 255 kPa)' : ' (au-delà de 255 kPa)'}.`);
+  Log.add('info', `Pression d'admission lue via le PID 01${hex2(state.mapSource)}${state.mapSource === 0x0B ? (state.mapScale === 1 ? ' (plafonné à 255 kPa)' : ` (échelle ×${fmtNum(state.mapScale, 2)})`) : ' (au-delà de 255 kPa)'}.`);
   keepAwake(true);
   Log.add('info', 'Mode Live démarré.');
 
@@ -2652,7 +2685,7 @@ function renderLive() {
     }
     if (c.key === 'map' && v != null) {
       const b = (v - currentBaro()) / 100;
-      const capped = state.mapSource === 0x0B && v >= 254;
+      const capped = state.mapSource === 0x0B && v >= 254 * state.mapScale;
       card.querySelector('[data-sub]').textContent = `PID 01${hex2(state.mapSource)} · ${b >= 0 ? '+' : ''}${fmtNum(b, 2)} bar relatifs${capped ? ' · plafond PID atteint' : ''}`;
     }
     if (c.key === 'baro') card.querySelector('[data-sub]').textContent = `Source : ${state.baroSource === 'pid' ? 'PID 0133' : state.baroSource}`;
@@ -3234,6 +3267,7 @@ async function scanDtcs() {
     state.dtc.ff = null;
     if (state.dtc.stored.length) {
       try {
+        await ensureMapScaling(elm);
         state.dtc.ff = await elm.readFreezeFrame(FF_PIDS.filter((pid) => elm.supports(pid)));
         if (state.dtc.ff) Log.add('info', `Données figées (${state.dtc.ff.dtc}) : ${Object.entries(state.dtc.ff.values).map(([k, v]) => `${k}=${typeof v === 'number' ? fmtNum(v, 1) : v}`).join(', ')}`);
       } catch (e) { Log.add('warn', `Données figées (mode 02) : ${e.message}`); }
