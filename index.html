@@ -843,7 +843,8 @@ class BleTransport {
         try { if (this.device.gatt.connected) this.device.gatt.disconnect(); } catch { /* ignoré */ }
         this.rx = this.tx = null;
         if (!retryable || attempt >= MAX) {
-          if (retryable) e.message = `${e.message} (après ${MAX} tentatives)`;
+          // Les erreurs Bluetooth sont des DOMException en lecture seule : on journalise au lieu de modifier le message.
+          if (retryable) Log.add('warn', `Échec après ${MAX} tentatives : l'appareil coupe systématiquement la liaison pendant la découverte des services.`);
           throw e;
         }
         Log.add('warn', `Tentative ${attempt}/${MAX} échouée : ${e.message} — nouvel essai dans ${attempt} s…`);
@@ -2113,7 +2114,7 @@ function explainError(e, transport) {
     return { level: 'error', text: 'Aucun service compatible sur cet appareil. Adaptateur Bluetooth classique (non BLE) ? Essayez « Afficher tous les appareils ».' };
   }
   if (name === 'SecurityError') return { level: 'error', text: 'Accès Bluetooth refusé : la page doit être servie en HTTPS ou sur localhost, et l\'autorisation accordée.' };
-  if (name === 'NetworkError') return { level: 'error', text: 'Connexion Bluetooth impossible. Vérifiez : contact mis, adaptateur NON appairé dans les réglages Bluetooth d\'Android, aucune autre appli OBD ouverte (Car Scanner, Torque…). Puis débranchez / rebranchez l\'adaptateur, coupez / rallumez le Bluetooth du téléphone et réessayez.' };
+  if (name === 'NetworkError') return { level: 'error', text: 'Connexion Bluetooth impossible : l\'appareil coupe la liaison. Vérifiez : contact mis, adaptateur non appairé dans les réglages Bluetooth du système, aucune autre appli OBD ouverte. Débranchez l\'adaptateur : s\'il apparaît toujours dans la liste, ce n\'est pas lui que vous avez sélectionné.' };
   if (name === 'NotSupportedError') return { level: 'error', text: `Opération Bluetooth non supportée par cet appareil : ${msg}` };
   if (name === 'InvalidStateError') return { level: 'error', text: `État Bluetooth invalide : ${msg}` };
   if (e instanceof TransportError) return { level: 'error', text: msg };
