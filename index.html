@@ -267,6 +267,12 @@
         <button id="btn-live-reset" class="btn btn-ghost btn-sm"><i data-lucide="rotate-ccw" class="h-3.5 w-3.5"></i>Réinitialiser min/max</button>
         <p id="live-hint" class="text-xs text-zinc-500">Connectez l'adaptateur puis démarrez la lecture en boucle.</p>
       </div>
+      <div class="card flex flex-wrap items-center gap-3 py-3 sm:py-3">
+        <button id="btn-rec" class="btn btn-ghost"><i data-lucide="circle-dot" class="h-4 w-4 text-red-400"></i>Enregistrer le trajet</button>
+        <button id="btn-rec-mark" class="btn btn-ghost btn-sm hidden" title="Noter le moment présent dans l'enregistrement"><i data-lucide="flag" class="h-3.5 w-3.5"></i>Repère</button>
+        <button id="btn-rec-dl" class="btn btn-ghost btn-sm" disabled><i data-lucide="download" class="h-3.5 w-3.5"></i>Télécharger (CSV)</button>
+        <p id="rec-status" class="flex-1 text-xs text-zinc-500">Enregistre toutes les valeurs en continu pendant que vous roulez, à exporter ensuite en fichier tableur.</p>
+      </div>
       <div id="live-main" class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"></div>
       <div id="live-secondary" class="grid grid-cols-2 gap-3 lg:grid-cols-4"></div>
       <div class="flex flex-wrap items-center justify-between gap-2 pt-2">
@@ -2026,6 +2032,7 @@ class Analyzer {
     this.history.unshift({ id, time: Date.now(), seen: Date.now(), title: rule.title, status: r.status, message: r.message, value: r.value });
     this.history = this.history.slice(0, 80);
     Log.add(r.status === 'alert' ? 'error' : 'warn', `Diagnostic · ${rule.title} : ${r.message} (${r.value})`);
+    Recorder.mark(`${r.status === 'alert' ? 'ALERTE' : 'Attention'} ${rule.title} : ${r.message}`);
   }
 
   overall() {
@@ -2034,6 +2041,111 @@ class Analyzer {
     if (worst === 'wait' && list.some((r) => r.status === 'ok' || r.status === 'info')) return 'ok';
     return worst === 'info' ? 'ok' : worst;
   }
+}
+
+/* =====================================================================
+ * Enregistrement du trajet : toutes les valeurs du Live, exportées en CSV
+ * ===================================================================== */
+const Recorder = {
+  active: false, rows: [], startT: 0, startDate: null, note: '', marks: 0, timer: null, saved: true,
+  MAX_ROWS: 40000, // ≈ 2 h à 5 cycles/s
+
+  start() {
+    if (!state.elm) { toast('Connectez d\'abord l\'adaptateur.', 'warn'); return; }
+    if (this.rows.length && !this.saved && !confirm('Un enregistrement non téléchargé sera remplacé. Continuer ?')) return;
+    Object.assign(this, { active: true, rows: [], startT: performance.now(), startDate: new Date(), note: '', marks: 0, saved: false });
+    if (!state.live) startLive();
+    this.timer = setInterval(() => renderRecorder(), 1000);
+    Log.add('info', 'Enregistrement du trajet démarré.');
+    renderRecorder();
+  },
+  stop() {
+    if (!this.active) return;
+    this.active = false;
+    clearInterval(this.timer);
+    Log.add('info', `Enregistrement du trajet arrêté : ${this.rows.length} points sur ${fmtDuration(this.duration())}, ${this.marks} repère(s).`);
+    renderRecorder();
+  },
+  duration() { return this.rows.length ? (this.rows.at(-1).t - this.startT) / 1000 : 0; },
+
+  /** Appelé à chaque cycle du Live. */
+  push(sample) {
+    if (!this.active) return;
+    const row = { t: sample.t, note: this.note };
+    for (const [k, v] of Object.entries(sample)) if (typeof v === 'number' && Number.isFinite(v) && k !== 't') row[k] = v;
+    this.note = '';
+    this.rows.push(row);
+    if (this.rows.length >= this.MAX_ROWS) { this.stop(); toast('Enregistrement arrêté : taille maximale atteinte. Téléchargez-le.', 'warn'); }
+  },
+  /** Événement rattaché au prochain point (anomalie détectée, repère, test…). */
+  mark(text) {
+    if (!this.active) return;
+    this.note = this.note ? `${this.note} | ${text}` : text;
+  },
+
+  toCsv() {
+    const keys = new Set();
+    this.rows.forEach((r) => Object.keys(r).forEach((k) => keys.add(k)));
+    keys.delete('t'); keys.delete('note');
+    const cols = [...Object.keys(VALUE_META).filter((k) => keys.has(k)), ...[...keys].filter((k) => !VALUE_META[k]).sort()];
+    const num = (v) => (v == null ? '' : String(Math.round(v * 100) / 100).replace('.', ','));
+    const cell = (txt) => (/[;"\n]/.test(txt) ? `"${txt.replace(/"/g, '""')}"` : txt);
+    const label = (k) => { const m = VALUE_META[k] || CSV_EXTRA[k]; return m ? `${m[0]} (${m[1]})` : k; };
+    const head = ['temps (s)', 'heure', ...cols.map(label), 'événement'];
+    const t0 = this.startDate.getTime();
+    const lines = this.rows.map((r) => [
+      num((r.t - this.startT) / 1000),
+      new Date(t0 + r.t - this.startT).toLocaleTimeString('fr-FR'),
+      ...cols.map((k) => num(r[k])),
+      cell(r.note || ''),
+    ].join(';'));
+    return '\ufeff' + [head.map(cell).join(';'), ...lines].join('\r\n'); // BOM : accents corrects dans Excel
+  },
+  download() {
+    if (!this.rows.length) return;
+    const p = state.profile;
+    const blob = new Blob([this.toCsv()], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `carbuddy-trajet-${(p.model || 'vehicule').replace(/[^\w-]+/g, '_')}-${this.startDate.toISOString().slice(0, 16).replace(/[:T]/g, '-')}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    this.saved = !this.active;
+    Log.add('info', `Trajet exporté (${this.rows.length} points).`);
+  },
+};
+
+/** Libellés des colonnes CSV absentes de VALUE_META. */
+const CSV_EXTRA = {
+  volt: ['Tension batterie', 'V'], dpfDp: ['FAP pression différentielle', 'kPa'], dpfIn: ['FAP pression entrée', 'kPa'],
+  dpfOut: ['FAP pression sortie', 'kPa'], dpfTin: ['FAP temp. entrée', '°C'], dpfTout: ['FAP temp. sortie', '°C'],
+  dpfLoad: ['FAP charge suies', '%'], regenAvgMin: ['Régénération durée moyenne', 'min'], regenAvgKm: ['Régénération intervalle moyen', 'km'],
+  turboRpm: ['Régime turbo', 'tr/min'],
+};
+
+const fmtDuration = (sec) => {
+  const s = Math.floor(sec), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return `${h ? `${h} h ` : ''}${String(m).padStart(h ? 2 : 1, '0')} min ${String(s % 60).padStart(2, '0')} s`;
+};
+
+function renderRecorder() {
+  const r = Recorder;
+  const btn = $('#btn-rec');
+  btn.className = `btn ${r.active ? 'btn-danger' : 'btn-ghost'}`;
+  btn.innerHTML = r.active
+    ? '<i data-lucide="square" class="h-4 w-4"></i>Arrêter l\'enregistrement'
+    : '<i data-lucide="circle-dot" class="h-4 w-4 text-red-400"></i>Enregistrer le trajet';
+  $('#btn-rec-mark').classList.toggle('hidden', !r.active);
+  $('#btn-rec-dl').disabled = !r.rows.length;
+  const st = $('#rec-status');
+  if (r.active) {
+    st.className = 'flex-1 text-xs font-mono text-red-300';
+    st.textContent = `● REC ${fmtDuration((performance.now() - r.startT) / 1000)} · ${r.rows.length} points${state.live ? '' : ' · en pause (Live arrêté)'}${r.marks ? ` · ${r.marks} repère(s)` : ''}`;
+  } else if (r.rows.length) {
+    st.className = 'flex-1 text-xs text-zinc-400';
+    st.textContent = `Enregistrement terminé : ${r.rows.length} points sur ${fmtDuration(r.duration())}. Téléchargez-le avant de fermer l'app.`;
+  }
+  refreshIcons();
 }
 
 /* =====================================================================
@@ -2058,6 +2170,7 @@ const AccelTest = {
       if (s.rpm > 900 && s.rpm < 2300 && loadOk) {
         this.state = 'recording'; this.startT = s.t; this.points = [];
         Log.add('info', `Enregistrement du test démarré à ${fmtNum(s.rpm)} tr/min.`);
+        Recorder.mark('Début test d\'accélération');
       }
     }
     if (this.state === 'recording') {
@@ -2149,6 +2262,7 @@ const AccelTest = {
     this.state = 'done';
     Log.add(res.status === 'alert' ? 'error' : res.status === 'warn' ? 'warn' : 'ok', `Test d'accélération : ${res.title}`);
     this.logPoints(res);
+    Recorder.mark(`Fin test d'accélération : ${res.title}`);
     renderAccel();
     if (res.status === 'alert') toast(res.title, 'error');
   },
@@ -2678,6 +2792,7 @@ async function liveLoop() {
     try {
       analyzer.push(sample, state.profile, currentBaro());
       AccelTest.feed(sample, state.profile, currentBaro(), analyzer.ctx);
+      Recorder.push(sample);
     } catch (e) {
       Log.add('error', `Erreur interne du module d'analyse : ${e.message}`);
       console.error(e);
@@ -3715,6 +3830,15 @@ function bindEvents() {
   $('#btn-editor-save').addEventListener('click', saveEditor);
 
   $('#btn-accel-start').addEventListener('click', () => AccelTest.start());
+  $('#btn-rec').addEventListener('click', () => (Recorder.active ? Recorder.stop() : Recorder.start()));
+  $('#btn-rec-dl').addEventListener('click', () => Recorder.download());
+  $('#btn-rec-mark').addEventListener('click', () => {
+    Recorder.marks++;
+    Recorder.mark(`Repère n°${Recorder.marks}`);
+    Log.add('info', `Repère n°${Recorder.marks} ajouté à l'enregistrement.`);
+    toast(`Repère n°${Recorder.marks} noté.`, 'ok');
+    renderRecorder();
+  });
   $('#btn-accel-cancel').addEventListener('click', () => AccelTest.cancel());
   $('#btn-history-clear').addEventListener('click', () => { analyzer.history = []; renderDiag(); });
 
@@ -3762,7 +3886,9 @@ function bindEvents() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && state.live) keepAwake(true);
   });
-  window.addEventListener('beforeunload', () => {
+  window.addEventListener('beforeunload', (e) => {
+    // Enregistrement de trajet non téléchargé : le navigateur demande confirmation avant de quitter.
+    if (Recorder.rows.length && !Recorder.saved) { e.preventDefault(); e.returnValue = ''; return; }
     state.manualDisconnect = true;
     try { state.transport?.disconnect(); } catch { /* ignoré */ }
   });
