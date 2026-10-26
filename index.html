@@ -152,6 +152,8 @@
             </div>
           </div>
 
+          <div id="vin-banner" class="mt-4 hidden"></div>
+
           <div id="profile-details" class="mt-5"></div>
 
           <div class="mt-5">
@@ -1030,6 +1032,7 @@ class SimTransport {
     this.stored = ['0299', '2463', '0401'];
     this.pending = ['0101'];
     this.baro = 100;
+    this.vin = 'JN1DEMT32F0000001'; // VIN fictif de démonstration
     this.s = {
       rpm: 0, map: 100, ect: 38, speed: 0, load: 0, iat: 24, cact: 24, pedal: 0, fuelRate: 0,
       boostCmd: 100, railCmd: 280, rail: 280, vgtCmd: 25, vgt: 25, egrCmd: 38, egrAct: 38, maf: 0,
@@ -1199,6 +1202,7 @@ class SimTransport {
       case 0x2D: return [Math.round((egrErr + 100) * 1.28)];
       case 0x33: return [this.baro];
       case 0x49: return [pct(st.pedal)];
+      case 0x51: return [0x04]; // diesel
       case 0x5E: return w16(st.fuelRate * 20);
       case 0x69: return [0x07, pct(st.egrCmd), pct(st.egrAct), Math.round((egrErr + 100) * 1.28), 0, 0, 0];
       case 0x6D: return [0x03, ...w16(st.railCmd * 10), ...w16(st.rail * 10), 0x41, 0, 0, 0, 0, 0];
@@ -1222,7 +1226,7 @@ class SimTransport {
       const masks = {
         0x00: [0x01, 0x04, 0x05, 0x0B, 0x0C, 0x0D, 0x0F, 0x10, 0x1C, 0x1F, 0x20],
         0x20: [0x21, 0x23, 0x2C, 0x2D, 0x33, 0x40],
-        0x40: [0x49, 0x5E, 0x60],
+        0x40: [0x49, 0x51, 0x5E, 0x60],
         0x60: [0x69, 0x6D, 0x70, 0x71, 0x77, 0x7A, 0x7C, 0x80],
         0x80: [0x87, 0x8B],
       };
@@ -1241,6 +1245,9 @@ class SimTransport {
       const data = pid === 0x02 ? this._dtcBytes(this.stored.slice(0, 1)) : this._pidData(pid, this.frozen);
       if (!data) return null;
       ecm.push([0x42, pid, 0x00, ...data]);
+    } else if (mode === '09') {
+      if (cmd.slice(2, 4) !== '02') return null;
+      ecm.push([0x49, 0x02, 0x01, ...[...this.vin].map((c) => c.charCodeAt(0))]);
     } else if (mode === '03') {
       ecm.push([0x43, this.stored.length, ...this._dtcBytes(this.stored)]);
     } else if (mode === '07') {
@@ -1561,6 +1568,24 @@ class ELM327 {
       }
     }
     return { dtc, values };
+  }
+
+  /**
+   * Mode 09 PID 02 : numéro de série (VIN), 17 caractères ASCII.
+   * CAN : une réponse multi-trames [49 02 01 + 17 octets] ; K-Line : 5 trames [49 02 n° + 4 octets].
+   */
+  async readVin() {
+    let lines;
+    try { lines = await this.send('0902', { timeout: 6000 }); }
+    catch (e) { if (e.code === 'NO_DATA') return null; throw e; }
+    const msgs = parseResponse(lines, this.protocol).filter((m) => m.data[0] === 0x49 && m.data[1] === 0x02);
+    if (!msgs.length) return null;
+    const bytes = this.isCan
+      ? pickEcm(msgs).data.slice(2)
+      : msgs.sort((a, b) => a.data[2] - b.data[2]).flatMap((m) => m.data.slice(3));
+    // On ne garde que les caractères autorisés dans un VIN (ni I, ni O, ni Q) : élimine compteur et bourrage.
+    const vin = String.fromCharCode(...bytes).toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '').slice(-17);
+    return vin.length === 17 ? vin : null;
   }
 
   async readVoltage() {
@@ -2060,6 +2085,7 @@ const state = {
   baroSource: 'défaut',
   mapSource: 0x0B,            // PID utilisé pour la MAP : 0187 (étendue), 0170 (suralimentation) ou 010B
   mapScale: 1, scalingChecked: false, // kPa par unité du PID 010B (modifiable par le PID 014F)
+  vin: null, vinInfo: null,   // VIN lu en mode 09 et son décodage
   hist: {}, minmax: {},
   noData: {}, disabledPids: new Set(), rawLogged: new Set(),
   rate: 0, renderQueued: false,
@@ -2291,6 +2317,7 @@ async function connectAdapter({ reuse = false } = {}) {
     state.elm = elm;
     state.disabledPids = new Set(); state.rawLogged = new Set();
     state.mapScale = 1; state.scalingChecked = false;
+    state.vin = null; state.vinInfo = null;
     await elm.initialize(setConnDetail);
     Log.add('ok', `Adaptateur initialisé : ${elm.version || 'version inconnue'}`);
     await updateVoltage();
@@ -2299,6 +2326,7 @@ async function connectAdapter({ reuse = false } = {}) {
       await elm.detectVehicle(setConnDetail);
       setConnState('connected', `${elm.protocolDesc || 'Protocole détecté'} · ${elm.version}`);
       toast('Connecté au véhicule.', 'ok');
+      await identifyVehicle(elm);
     } catch (e) {
       Log.add('warn', `Adaptateur prêt mais pas de dialogue avec le calculateur : ${e.message}`);
       setConnState('nocar', 'Adaptateur prêt — aucune réponse du véhicule (contact mis ?).');
@@ -2480,6 +2508,7 @@ async function startLive() {
       await elm.detectVehicle(setConnDetail);
       setConnState('connected', `${elm.protocolDesc || 'Protocole détecté'} · ${elm.version}`);
       renderAdapterInfo();
+      await identifyVehicle(elm);
     } catch (e) {
       Log.add('error', `Le véhicule ne répond pas : ${e.message}`);
       toast('Le véhicule ne répond pas : contact mis ?', 'error');
@@ -3026,6 +3055,7 @@ function renderProfile() {
       <span class="chip border-zinc-700 text-zinc-300"><i data-lucide="fuel" class="h-3 w-3"></i>${p.fuel === 'diesel' ? 'Diesel' : 'Essence'}</span>
       <span class="chip border-zinc-700 text-zinc-300"><i data-lucide="fan" class="h-3 w-3"></i>${p.aspiration === 'turbo' ? 'Turbo' : 'Atmosphérique'}</span>
       <span class="chip border-zinc-700 text-zinc-300"><i data-lucide="box" class="h-3 w-3"></i>${fmtNum(p.displacement ?? 1.6, 3)} L</span>
+      ${p.vin ? `<span class="chip border-sky-500/40 text-sky-300" title="VIN ${esc(p.vin)}"><i data-lucide="fingerprint" class="h-3 w-3"></i>VIN …${esc(p.vin.slice(-6))}</span>` : ''}
       ${p.years ? `<span class="chip border-zinc-700 text-zinc-300"><i data-lucide="calendar" class="h-3 w-3"></i>${esc(p.years)}</span>` : ''}
     </div>
     <div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -3052,7 +3082,111 @@ function selectProfile(id) {
   renderProfileSelect();
   renderProfile();
   renderDiag();
+  renderVinBanner();
   Log.add('info', `Profil véhicule : ${p.name}`);
+}
+
+/* =====================================================================
+ * Identification du véhicule par son VIN (lu en OBD, décodé localement)
+ * ===================================================================== */
+const WMI_CODES = {
+  JN1: 'Nissan (Japon)', JN8: 'Nissan (Japon)', SJN: 'Nissan (Royaume-Uni)', VSK: 'Nissan (Espagne)', VNV: 'Nissan (France)',
+  VF1: 'Renault', VF6: 'Renault', UU1: 'Dacia', VF3: 'Peugeot', VR3: 'Peugeot', VF7: 'Citroën', VR7: 'Citroën', VR1: 'DS',
+  VSS: 'Seat', TMB: 'Škoda', WVW: 'Volkswagen', WV1: 'Volkswagen Utilitaires', WV2: 'Volkswagen Utilitaires', WAU: 'Audi',
+  WBA: 'BMW', WMW: 'Mini', WDD: 'Mercedes-Benz', WDB: 'Mercedes-Benz', W1K: 'Mercedes-Benz', W0L: 'Opel', W0V: 'Opel',
+  WF0: 'Ford (Allemagne)', ZFA: 'Fiat', ZAR: 'Alfa Romeo', JTD: 'Toyota', JTE: 'Toyota', JTN: 'Toyota', SB1: 'Toyota (Royaume-Uni)',
+  VNK: 'Toyota (France)', NMT: 'Toyota (Turquie)', JHM: 'Honda', JMZ: 'Mazda', JMB: 'Mitsubishi', JS2: 'Suzuki', TSM: 'Suzuki (Hongrie)',
+  KNA: 'Kia', KNE: 'Kia', U5Y: 'Kia (Slovaquie)', KMH: 'Hyundai', TMA: 'Hyundai (Tchéquie)', YV1: 'Volvo', SAL: 'Land Rover',
+  SAJ: 'Jaguar', WP0: 'Porsche', XP7: 'Tesla', '5YJ': 'Tesla', LRW: 'Tesla (Chine)',
+};
+const VIN_REGIONS = { J: 'Japon', K: 'Corée du Sud', L: 'Chine', N: 'Turquie', S: 'Royaume-Uni', T: 'Europe centrale', U: 'Europe de l\'Est',
+  V: 'France / Espagne', W: 'Allemagne', X: 'Russie / Pays-Bas', Y: 'Europe du Nord', Z: 'Italie', 9: 'Brésil' };
+const VIN_YEAR_CODES = 'ABCDEFGHJKLMNPRSTVWXY123456789'; // 10e caractère : cycle de 30 ans à partir de 1980
+
+/** Décodage local : constructeur (3 premiers caractères), région, année-modèle probable (10e caractère). */
+function decodeVin(vin) {
+  const maker = WMI_CODES[vin.slice(0, 3)] || null;
+  const region = VIN_REGIONS[vin[0]] || (/[1-5]/.test(vin[0]) ? 'Amérique du Nord' : null);
+  const i = VIN_YEAR_CODES.indexOf(vin[9]);
+  let year = null;
+  if (i >= 0) { year = 1980 + i; while (year + 30 <= new Date().getFullYear() + 1) year += 30; }
+  return { maker, make: maker ? maker.split(' (')[0] : null, region, year };
+}
+
+/** Lit le VIN et le type de carburant, puis sélectionne le profil associé s'il existe. */
+async function identifyVehicle(elm) {
+  try {
+    const vin = await elm.readVin();
+    if (!vin) { Log.add('info', 'VIN non transmis par le calculateur (mode 09).'); return; }
+    state.vin = vin;
+    state.vinInfo = decodeVin(vin);
+    if (elm.supports(0x51) && elm.supported?.size) {
+      try {
+        const f = (await elm.readPid(0x51))[0];
+        state.vinInfo.fuel = f === 1 ? 'essence' : f === 4 ? 'diesel' : null;
+      } catch { /* facultatif */ }
+    }
+    const info = state.vinInfo;
+    Log.add('ok', `VIN lu : ${vin} — ${info.maker || 'constructeur non répertorié'}${info.region ? ` (${info.region})` : ''}${info.year ? `, année-modèle probable ${info.year}` : ''}${info.fuel ? `, ${info.fuel}` : ''}.`);
+    const known = Profiles.all().find((p) => p.vin === vin);
+    if (known && known.id !== state.profile.id) {
+      selectProfile(known.id);
+      toast(`Profil « ${known.name} » sélectionné automatiquement (VIN reconnu).`, 'ok');
+    } else if (known) Log.add('info', `Profil « ${known.name} » associé à ce VIN.`);
+  } catch (e) {
+    Log.add('warn', `Lecture du VIN : ${e.message}`);
+  } finally {
+    renderVinBanner();
+    renderAdapterInfo();
+  }
+}
+
+function renderVinBanner() {
+  const box = $('#vin-banner');
+  const vin = state.vin;
+  if (!vin || Profiles.all().some((p) => p.vin === vin)) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  const info = state.vinInfo || {};
+  const what = [info.maker || 'Constructeur non répertorié', info.year && `année-modèle probable ${info.year}`, info.fuel].filter(Boolean).join(' · ');
+  box.className = 'mt-4 rounded-xl border border-sky-500/40 bg-sky-500/10 p-3 text-sm';
+  box.innerHTML = `
+    <p class="flex items-start gap-2 text-sky-200"><i data-lucide="fingerprint" class="mt-0.5 h-4 w-4 shrink-0"></i>
+      <span>Véhicule détecté : <b>${esc(what)}</b><br><span class="font-mono text-xs text-sky-300/80">VIN ${esc(vin)}</span><br>
+      <span class="text-xs text-zinc-400">Aucun profil n'est associé à ce VIN.</span></span></p>
+    <div class="mt-3 flex flex-wrap gap-2">
+      <button type="button" class="btn btn-ghost btn-sm" data-vin="link"><i data-lucide="link" class="h-3.5 w-3.5"></i>Associer au profil actuel</button>
+      <button type="button" class="btn btn-primary btn-sm" data-vin="new"><i data-lucide="plus" class="h-3.5 w-3.5"></i>Créer un profil pour ce véhicule</button>
+    </div>`;
+  refreshIcons();
+}
+
+/** Associe le VIN au profil actif (un préréglage est d'abord copié en profil personnel). */
+function linkVinToProfile() {
+  const p = state.profile;
+  if (p.preset) {
+    const copy = { ...structuredClone(p), id: `custom-${Date.now()}`, preset: false, vin: state.vin, name: `${p.name} — mon véhicule` };
+    Profiles.upsert(copy);
+    selectProfile(copy.id);
+  } else {
+    p.vin = state.vin;
+    Profiles.upsert(p);
+    renderProfile();
+  }
+  toast(`VIN associé au profil « ${state.profile.name} » : il sera sélectionné automatiquement à la prochaine connexion.`, 'ok');
+  renderVinBanner();
+}
+
+/** Ouvre l'éditeur avec un profil générique adapté (carburant, turbo) pré-rempli depuis le VIN. */
+function createProfileFromVin() {
+  const info = state.vinInfo || {};
+  const sup = state.elm?.supported || new Set();
+  const diesel = info.fuel ? info.fuel === 'diesel' : [0x7A, 0x7C, 0x8B].some((pid) => sup.has(pid));
+  const turbo = diesel || [0x70, 0x71, 0x74, 0x6F].some((pid) => sup.has(pid));
+  const base = Profiles.get(diesel ? 'generic-diesel-turbo' : turbo ? 'generic-petrol-turbo' : 'generic-petrol-na');
+  openEditor('new', base, {
+    name: `${info.make || 'Véhicule'} — VIN …${state.vin.slice(-6)}`,
+    make: info.make || '', model: '', engine: '', years: info.year ? String(info.year) : '', vin: state.vin,
+    notes: 'Profil créé depuis le VIN avec des seuils génériques : complétez modèle, moteur et cylindrée, puis ajustez les seuils.',
+  });
 }
 
 const EDITOR_FIELDS = [
@@ -3061,6 +3195,7 @@ const EDITOR_FIELDS = [
   { path: 'model', label: 'Modèle', type: 'text' },
   { path: 'engine', label: 'Moteur', type: 'text', span: 'sm:col-span-2' },
   { path: 'years', label: 'Années', type: 'text' },
+  { path: 'vin', label: 'VIN (numéro de série, facultatif)', type: 'text', span: 'sm:col-span-2' },
   { path: 'redline', label: 'Régime maxi (tr/min)', type: 'number' },
   { path: 'displacement', label: 'Cylindrée (litres)', type: 'number' },
   { path: 'fuel', label: 'Carburant', type: 'select', options: [['diesel', 'Diesel'], ['essence', 'Essence']] },
@@ -3082,11 +3217,11 @@ const EDITOR_FIELDS = [
 ];
 let editorDraft = null;
 
-function openEditor(mode) {
-  const base = structuredClone(state.profile);
+function openEditor(mode, source = state.profile, overrides = null) {
+  const base = structuredClone(source);
   if (mode === 'new') {
-    editorDraft = { ...base, id: `custom-${Date.now()}`, preset: false, name: `${base.name} (copie)` };
-    $('#editor-title').textContent = 'Nouveau profil (copie du profil actuel)';
+    editorDraft = { ...base, id: `custom-${Date.now()}`, preset: false, name: `${base.name} (copie)`, vin: '', ...(overrides || {}) };
+    $('#editor-title').textContent = overrides ? 'Nouveau profil (véhicule détecté par son VIN)' : 'Nouveau profil (copie du profil actuel)';
   } else {
     editorDraft = base;
     $('#editor-title').textContent = `Modifier « ${base.name} »`;
@@ -3129,6 +3264,10 @@ function saveEditor() {
     if (!p.name) throw new Error('Le nom du profil est obligatoire.');
     if (p.idle.min >= p.idle.max) throw new Error('Le ralenti mini doit être inférieur au ralenti maxi.');
     if (p.aspiration === 'turbo' && p.map.curve.length < 2) throw new Error('Un moteur turbo nécessite au moins 2 points de courbe MAP.');
+    p.vin = (p.vin || '').toUpperCase().replace(/\s+/g, '');
+    if (p.vin && !/^[A-HJ-NPR-Z0-9]{17}$/.test(p.vin)) throw new Error('Le VIN doit comporter 17 caractères (lettres I, O et Q exclues).');
+    const twin = p.vin && Profiles.all().find((x) => x.vin === p.vin && x.id !== p.id);
+    if (twin) throw new Error(`Ce VIN est déjà associé au profil « ${twin.name} ».`);
   } catch (e) { toast(e.message, 'error'); return; }
   p.preset = false;
   Profiles.upsert(p);
@@ -3155,6 +3294,7 @@ function renderAdapterInfo() {
     row('Appareil', esc(elm ? state.deviceName : '—')),
     row('Puce', esc(elm?.version || '—')),
     row('Protocole', esc(elm?.protocolDesc || (elm?.protocol != null ? `n° ${elm.protocol}` : '—'))),
+    row('VIN', state.vin ? `<span class="text-[12px]">${esc(state.vin)}</span>` : '—'),
     row('Tension', state.values.volt != null && elm ? `${fmtNum(state.values.volt, 1)} V` : '—'),
     `<div class="kv flex-col items-start"><dt>Diagnostic avancé disponible</dt><dd class="w-full text-left font-sans">${caps}</dd></div>`,
     `<div class="kv flex-col items-stretch">
@@ -3391,6 +3531,11 @@ function bindEvents() {
   $('#btn-live-reset').addEventListener('click', () => { state.minmax = {}; analyzer.maxMap = null; renderLive(); });
 
   $('#profile-select').addEventListener('change', (e) => selectProfile(e.target.value));
+  $('#vin-banner').addEventListener('click', (e) => {
+    const action = e.target.closest('[data-vin]')?.dataset.vin;
+    if (action === 'link') linkVinToProfile();
+    else if (action === 'new') createProfileFromVin();
+  });
   $('#btn-profile-new').addEventListener('click', () => openEditor('new'));
   $('#btn-profile-edit').addEventListener('click', () => openEditor('edit'));
   $('#btn-profile-delete').addEventListener('click', () => {
