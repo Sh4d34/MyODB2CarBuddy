@@ -2066,8 +2066,21 @@ const AccelTest = {
       // Pied levé : charge retombée (ou, sans PID de charge, régime qui redescend).
       const released = s.load != null ? s.load < p.map.loadThreshold - 15 : s.rpm < peakRpm - 200;
       if (dur > 1 && released) { this.finish(p, baro); return; }
-      if (s.map != null) this.points.push({ rpm: s.rpm, map: s.map, t: s.t, load: s.load, cmd: s.boostCmd, rail: s.rail, railCmd: s.railCmd });
+      if (s.map != null) this.points.push({
+        rpm: s.rpm, map: s.map, t: s.t, load: s.load, cmd: s.boostCmd, rail: s.rail, railCmd: s.railCmd,
+        pedal: s.pedal, speed: s.speed, vgtCmd: s.vgtCmd, vgt: s.vgt, egrCmd: s.egrCmd, egrAct: s.egrAct,
+      });
       if (s.rpm >= Math.min(3400, p.redline - 300) || dur > 15) this.finish(p, baro);
+    }
+  },
+
+  /** Recopie le détail du test dans la console, pour qu'il figure dans le journal copié / téléchargé. */
+  logPoints(res) {
+    res.lines.forEach((l) => Log.add('info', `  ${l.replace(/<[^>]+>/g, '')}`));
+    const f = (v, dec = 0) => (v == null ? '-' : fmtNum(v, dec));
+    Log.add('info', 'Points du test : t(s) | tr/min | km/h | pédale % | charge % | MAP kPa | consigne kPa | VGT consigne/réel % | EGR consigne/réel % | rampe/consigne bar');
+    for (const x of this.points) {
+      Log.add('info', `  ${f((x.t - this.startT) / 1000, 1)} | ${f(x.rpm)} | ${f(x.speed)} | ${f(x.pedal)} | ${f(x.load)} | ${f(x.map)} | ${f(x.cmd)} | ${f(x.vgtCmd)}/${f(x.vgt)} | ${f(x.egrCmd)}/${f(x.egrAct)} | ${f(x.rail)}/${f(x.railCmd)}`);
     }
   },
 
@@ -2135,6 +2148,7 @@ const AccelTest = {
     this.result = res;
     this.state = 'done';
     Log.add(res.status === 'alert' ? 'error' : res.status === 'warn' ? 'warn' : 'ok', `Test d'accélération : ${res.title}`);
+    this.logPoints(res);
     renderAccel();
     if (res.status === 'alert') toast(res.title, 'error');
   },
