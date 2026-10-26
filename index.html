@@ -187,7 +187,16 @@
           </div>
 
           <div class="space-y-2.5 text-sm">
-            <label class="flex items-start gap-2.5">
+            <div>
+              <label class="label" for="opt-link">Type de liaison avec l'adaptateur</label>
+              <select id="opt-link" class="input">
+                <option value="serial">Bluetooth classique (V-LINK, OBDII…) — appairé au préalable</option>
+                <option value="ble">Bluetooth Low Energy (IOS-Vlink, VEEPEAK…) — sans appairage</option>
+                <option value="sim">Mode démo (simulateur ELM327)</option>
+              </select>
+              <p id="link-help" class="mt-1.5 text-xs text-zinc-500"></p>
+            </div>
+            <label id="row-all-devices" class="flex items-start gap-2.5">
               <input id="opt-all-devices" type="checkbox" class="check mt-0.5">
               <span><span class="text-zinc-200">Afficher tous les appareils Bluetooth</span>
                 <span class="block text-xs text-zinc-500">À cocher si votre adaptateur n'apparaît pas dans la liste filtrée.</span></span>
@@ -197,12 +206,7 @@
               <span><span class="text-zinc-200">Requêtes rapides (CAN)</span>
                 <span class="block text-xs text-zinc-500">Ajoute le nombre de réponses attendues (ex. <code class="font-mono">010C1</code>) pour accélérer le Live. Désactivé automatiquement si l'adaptateur ne le gère pas.</span></span>
             </label>
-            <label class="flex items-start gap-2.5">
-              <input id="opt-sim" type="checkbox" class="check mt-0.5">
-              <span><span class="text-zinc-200">Mode démo (simulateur ELM327)</span>
-                <span class="block text-xs text-zinc-500">Teste l'interface sans véhicule : ralenti → accélération → croisière, avec codes défauts fictifs.</span></span>
-            </label>
-            <div id="sim-fault-row" class="ml-6 hidden">
+            <div id="sim-fault-row" class="hidden">
               <label class="label" for="opt-sim-fault">Panne simulée (modifiable en cours de route)</label>
               <select id="opt-sim-fault" class="input">
                 <option value="none">Aucune (véhicule sain)</option>
@@ -223,10 +227,10 @@
               <i data-lucide="chevron-down" class="ml-auto h-4 w-4 transition group-open:rotate-180"></i>
             </summary>
             <ul class="mt-2 list-disc space-y-1 pl-5">
-              <li>Adaptateur ELM327 <b>Bluetooth Low Energy (BLE / 4.0)</b> obligatoire (Vgate iCar Pro BLE, Veepeak BLE, vLinker FS/MC BLE, OBDLink CX…). Les modèles « Bluetooth classique » (SPP) ne sont pas accessibles par le Web Bluetooth.</li>
-              <li>Navigateur : Chrome / Edge sur Android, Windows, macOS, ChromeOS. Sur iPhone : application <b>Bluefy</b>.</li>
+              <li><b>Bluetooth classique</b> (nom « V-LINK », « OBDII »…) : appairez d'abord l'adaptateur dans les réglages Bluetooth du téléphone (code PIN habituel : <code class="font-mono">1234</code> ou <code class="font-mono">0000</code>), puis choisissez-le ici. Nécessite une version récente de Chrome (API Web Serial).</li>
+              <li><b>Bluetooth Low Energy</b> (nom « IOS-Vlink », « VEEPEAK »…) : ne pas appairer dans les réglages, la sélection se fait directement ici.</li>
+              <li>Navigateur : Chrome / Edge sur Android, Windows, macOS, ChromeOS. Sur iPhone, pas de Bluetooth classique ; en BLE, application <b>Bluefy</b>.</li>
               <li>La page doit être servie en <b>HTTPS</b> ou via <code class="font-mono">http://localhost</code>.</li>
-              <li>Ne pas appairer l'adaptateur dans les réglages Bluetooth du système : la sélection se fait depuis cette page.</li>
               <li><b>Installer l'application</b> : sur Android, bouton « Installer » en haut de l'écran ou menu ⋮ › « Installer l'application ». Elle s'ouvre ensuite en plein écran et fonctionne sans réseau (le Bluetooth reste nécessaire).</li>
               <li>Prise OBD du X-Trail T32 : sous la planche de bord, côté conducteur, à gauche de la colonne de direction.</li>
             </ul>
@@ -913,6 +917,97 @@ class BleTransport {
     try { await this.rx?.stopNotifications(); } catch { /* déjà fermé */ }
     if (this.device?.gatt?.connected) this.device.gatt.disconnect();
     this.rx = this.tx = null;
+  }
+}
+
+/* =====================================================================
+ * Transport Web Serial : Bluetooth classique (profil SPP / RFCOMM)
+ * Adaptateurs ELM327 « classiques » (Vgate iCar Pro « V-LINK », OBDII…) appairés au préalable.
+ * ===================================================================== */
+const SPP_UUID = '00001101-0000-1000-8000-00805f9b34fb';
+
+class SerialTransport {
+  constructor() {
+    this.kind = 'serial';
+    this.onData = null;
+    this.onDisconnect = null;
+    this.port = null; this.reader = null; this.writer = null;
+    this.decoder = new TextDecoder('utf-8');
+    this.encoder = new TextEncoder();
+    this.manualClose = false;
+    this.ready = false;
+    this._onPortDisconnect = (e) => { if (e.target === this.port) this._lost('port retiré'); };
+  }
+
+  get connected() { return !!(this.ready && this.writer); }
+
+  async connect() {
+    Log.add('info', 'Ouverture du sélecteur de ports série Bluetooth (adaptateurs appairés)…');
+    this.port = await navigator.serial.requestPort({
+      filters: [{ bluetoothServiceClassId: SPP_UUID }],
+      allowedBluetoothServiceClassIds: [SPP_UUID],
+    });
+    const info = this.port.getInfo();
+    Log.add('info', `Port sélectionné : ${info.bluetoothServiceClassId ? `Bluetooth SPP (${info.bluetoothServiceClassId.slice(4, 8)})` : 'série'}`);
+    await this._open();
+    return { name: 'Adaptateur Bluetooth classique' };
+  }
+
+  async reconnect() {
+    if (!this.port) throw new TransportError('NO_DEVICE', 'Aucun adaptateur mémorisé.');
+    Log.add('info', 'Réouverture du port série Bluetooth…');
+    await this._open();
+    return { name: 'Adaptateur Bluetooth classique' };
+  }
+
+  async _open() {
+    this.manualClose = false;
+    const t0 = performance.now();
+    await this.port.open({ baudRate: 38400 }); // ignoré en Bluetooth RFCOMM, mais obligatoire pour l'API
+    Log.add('ok', `Port série Bluetooth ouvert en ${Math.round(performance.now() - t0)} ms.`);
+    this.writer = this.port.writable.getWriter();
+    this.ready = true;
+    navigator.serial.removeEventListener('disconnect', this._onPortDisconnect);
+    navigator.serial.addEventListener('disconnect', this._onPortDisconnect);
+    this._readLoop();
+  }
+
+  async _readLoop() {
+    try {
+      this.reader = this.port.readable.getReader();
+      for (;;) {
+        const { value, done } = await this.reader.read();
+        if (done) break;
+        if (value?.length) this.onData?.(this.decoder.decode(value, { stream: true }));
+      }
+    } catch (e) {
+      if (!this.manualClose) Log.add('warn', `Lecture série interrompue : ${e.name} — ${e.message}`);
+    } finally {
+      try { this.reader?.releaseLock(); } catch { /* déjà libéré */ }
+      this.reader = null;
+    }
+    if (!this.manualClose) this._lost('flux de lecture fermé');
+  }
+
+  _lost(reason) {
+    if (!this.ready || this.manualClose) return;
+    this.ready = false;
+    Log.add('warn', `Port série Bluetooth fermé (${reason}).`);
+    this.onDisconnect?.();
+  }
+
+  async write(str) {
+    if (!this.connected) throw new TransportError('NOT_CONNECTED', 'Adaptateur Bluetooth non connecté.');
+    await this.writer.write(this.encoder.encode(str));
+  }
+
+  async disconnect() {
+    this.manualClose = true;
+    this.ready = false;
+    try { await this.reader?.cancel(); } catch { /* ignoré */ }
+    try { this.writer?.releaseLock(); } catch { /* ignoré */ }
+    this.writer = null;
+    try { await this.port?.close(); } catch { /* déjà fermé */ }
   }
 }
 
@@ -2109,6 +2204,12 @@ function updateButtons() {
 
 function explainError(e, transport) {
   const name = e?.name || '', msg = e?.message || String(e);
+  if (transport?.kind === 'serial') {
+    if (name === 'NotFoundError') return { level: 'info', text: 'Aucun port choisi. Si l\'adaptateur n\'apparaît pas : appairez-le d\'abord dans les réglages Bluetooth du téléphone (code PIN 1234 ou 0000), contact mis.' };
+    if (name === 'NetworkError') return { level: 'error', text: 'Impossible d\'ouvrir la liaison Bluetooth : adaptateur non alimenté (contact coupé), hors de portée, ou déjà utilisé par une autre appli OBD. Fermez les autres applis puis réessayez.' };
+    if (name === 'InvalidStateError') return { level: 'error', text: 'La liaison est déjà ouverte (autre onglet de l\'application ?). Fermez-le puis réessayez.' };
+    if (name === 'SecurityError') return { level: 'error', text: 'Accès au Bluetooth classique refusé par le navigateur (page non sécurisée ou autorisation refusée).' };
+  }
   if (name === 'NotFoundError') {
     if (/cancel/i.test(msg) || !transport?.device) return { level: 'info', text: 'Sélection annulée : aucun appareil choisi.' };
     return { level: 'error', text: 'Aucun service compatible sur cet appareil. Adaptateur Bluetooth classique (non BLE) ? Essayez « Afficher tous les appareils ».' };
@@ -2124,8 +2225,16 @@ function explainError(e, transport) {
 
 async function connectAdapter({ reuse = false } = {}) {
   if (state.busy) return;
-  const sim = $('#opt-sim').checked && !reuse;
-  if (!sim && !reuse) {
+  const link = $('#opt-link').value;
+  const sim = link === 'sim' && !reuse;
+  if (link === 'serial' && !reuse && !('serial' in navigator)) {
+    const text = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+      ? 'Le Bluetooth classique n\'est pas accessible depuis un navigateur sur iPhone : il faut un adaptateur BLE (avec l\'appli Bluefy).'
+      : 'Bluetooth classique indisponible dans ce navigateur (API Web Serial) : mettez Chrome à jour, ou utilisez un adaptateur BLE.';
+    Log.add('error', text); toast(text, 'error');
+    return;
+  }
+  if (link === 'ble' && !reuse) {
     if (!('bluetooth' in navigator)) {
       const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent);
       const text = ios
@@ -2145,6 +2254,7 @@ async function connectAdapter({ reuse = false } = {}) {
   state.busy = true;
   const transport = reuse ? state.lastTransport : sim
     ? new SimTransport({ fault: $('#opt-sim-fault').value })
+    : link === 'serial' ? new SerialTransport()
     : new BleTransport({ acceptAll: $('#opt-all-devices').checked });
   transport.onDisconnect = onTransportLost;
   setConnState('connecting', sim ? 'Démarrage du simulateur…' : reuse ? 'Reconnexion…' : 'Choisissez votre adaptateur dans la fenêtre du navigateur…');
@@ -2152,7 +2262,7 @@ async function connectAdapter({ reuse = false } = {}) {
   try {
     const info = reuse ? await transport.reconnect() : await transport.connect();
     state.transport = transport;
-    state.lastTransport = transport.kind === 'ble' ? transport : null;
+    state.lastTransport = transport.kind !== 'sim' ? transport : null;
     state.deviceName = info.name;
     Log.add('ok', `Liaison établie avec « ${info.name} ».`);
 
@@ -3151,6 +3261,18 @@ function showTab(tab) {
   });
 }
 
+/** Adapte les options et l'aide au type de liaison choisi. */
+function updateLinkOptions() {
+  const link = $('#opt-link').value;
+  $('#row-all-devices').classList.toggle('hidden', link !== 'ble');
+  $('#sim-fault-row').classList.toggle('hidden', link !== 'sim');
+  $('#link-help').textContent = {
+    serial: `Appairez d'abord l'adaptateur dans les réglages Bluetooth du téléphone (code PIN 1234 ou 0000), puis choisissez-le dans la liste.${'serial' in navigator ? '' : ' ⚠ Non disponible dans ce navigateur : mettez Chrome à jour.'}`,
+    ble: `Ne pas appairer l'adaptateur dans les réglages : il se choisit directement dans la liste.${'bluetooth' in navigator ? '' : ' ⚠ Web Bluetooth non disponible dans ce navigateur.'}`,
+    sim: 'Teste l\'interface sans véhicule : ralenti → accélération → croisière, avec codes défauts et pannes simulées.',
+  }[link];
+}
+
 function bindEvents() {
   $$('.tab-btn').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
   $('#ticker').addEventListener('click', () => showTab('console'));
@@ -3160,7 +3282,10 @@ function bindEvents() {
   $('#btn-connect-2').addEventListener('click', toggleConn);
   $('#btn-reconnect').addEventListener('click', () => connectAdapter({ reuse: true }));
 
-  $('#opt-sim').addEventListener('change', (e) => { $('#sim-fault-row').classList.toggle('hidden', !e.target.checked); });
+  $('#opt-link').addEventListener('change', (e) => {
+    updateLinkOptions();
+    try { localStorage.setItem('carbuddy.link', e.target.value); } catch { /* ignoré */ }
+  });
   $('#opt-sim-fault').addEventListener('change', (e) => {
     if (state.transport?.kind === 'sim') {
       state.transport.fault = e.target.value;
@@ -3255,6 +3380,8 @@ function init() {
   buildLiveCards();
   buildAdvancedCards();
   bindEvents();
+  try { const link = localStorage.getItem('carbuddy.link'); if (link && $(`#opt-link option[value="${link}"]`)) $('#opt-link').value = link; } catch { /* ignoré */ }
+  updateLinkOptions();
   renderProfileSelect();
   renderProfile();
   renderAdapterInfo();
@@ -3265,9 +3392,8 @@ function init() {
   updateLiveButton();
 
   Log.add('info', `CarBuddy OBD2 prêt — profil « ${state.profile.name} ».`);
-  if (!('bluetooth' in navigator)) Log.add('warn', 'Web Bluetooth non disponible dans ce navigateur : seul le mode démo fonctionnera.');
-  else if (!window.isSecureContext) Log.add('warn', 'Page non sécurisée : Web Bluetooth exige HTTPS ou localhost.');
-  else Log.add('info', 'Web Bluetooth disponible.');
+  if (!window.isSecureContext) Log.add('warn', 'Page non sécurisée : le Bluetooth exige HTTPS ou localhost.');
+  Log.add('info', `Bluetooth classique (Web Serial) : ${'serial' in navigator ? 'disponible' : 'non disponible'} · Bluetooth LE (Web Bluetooth) : ${'bluetooth' in navigator ? 'disponible' : 'non disponible'}.`);
 
   // Onglet demandé par un raccourci de l'application installée (?tab=live), sinon le dernier utilisé.
   let tab = new URLSearchParams(location.search).get('tab');
