@@ -201,6 +201,11 @@
               <span><span class="text-zinc-200">Afficher tous les appareils Bluetooth</span>
                 <span class="block text-xs text-zinc-500">À cocher si votre adaptateur n'apparaît pas dans la liste filtrée.</span></span>
             </label>
+            <label id="row-all-ports" class="flex items-start gap-2.5">
+              <input id="opt-all-ports" type="checkbox" class="check mt-0.5">
+              <span><span class="text-zinc-200">Afficher tous les ports série</span>
+                <span class="block text-xs text-zinc-500">À cocher si l'adaptateur appairé n'apparaît pas (sur Mac / PC, il peut se présenter comme un port série ordinaire, ex. « cu.V-LINK »).</span></span>
+            </label>
             <label class="flex items-start gap-2.5">
               <input id="opt-fast" type="checkbox" class="check mt-0.5" checked>
               <span><span class="text-zinc-200">Requêtes rapides (CAN)</span>
@@ -927,7 +932,8 @@ class BleTransport {
 const SPP_UUID = '00001101-0000-1000-8000-00805f9b34fb';
 
 class SerialTransport {
-  constructor() {
+  constructor({ allPorts = false } = {}) {
+    this.allPorts = allPorts;
     this.kind = 'serial';
     this.onData = null;
     this.onDisconnect = null;
@@ -942,13 +948,14 @@ class SerialTransport {
   get connected() { return !!(this.ready && this.writer); }
 
   async connect() {
-    Log.add('info', 'Ouverture du sélecteur de ports série Bluetooth (adaptateurs appairés)…');
-    this.port = await navigator.serial.requestPort({
-      filters: [{ bluetoothServiceClassId: SPP_UUID }],
-      allowedBluetoothServiceClassIds: [SPP_UUID],
-    });
+    Log.add('info', `Ouverture du sélecteur de ports série (${this.allPorts ? 'tous les ports' : 'adaptateurs Bluetooth appairés'})…`);
+    this.port = await navigator.serial.requestPort(this.allPorts
+      ? { allowedBluetoothServiceClassIds: [SPP_UUID] }
+      : { filters: [{ bluetoothServiceClassId: SPP_UUID }], allowedBluetoothServiceClassIds: [SPP_UUID] });
     const info = this.port.getInfo();
-    Log.add('info', `Port sélectionné : ${info.bluetoothServiceClassId ? `Bluetooth SPP (${info.bluetoothServiceClassId.slice(4, 8)})` : 'série'}`);
+    const kind = info.bluetoothServiceClassId ? `Bluetooth SPP (${info.bluetoothServiceClassId.slice(4, 8)})`
+      : info.usbVendorId ? `USB ${info.usbVendorId.toString(16)}:${(info.usbProductId ?? 0).toString(16)}` : 'port série système';
+    Log.add('info', `Port sélectionné : ${kind}`);
     await this._open();
     return { name: 'Adaptateur Bluetooth classique' };
   }
@@ -2266,7 +2273,7 @@ async function connectAdapter({ reuse = false } = {}) {
   state.busy = true;
   const transport = reuse ? state.lastTransport : sim
     ? new SimTransport({ fault: $('#opt-sim-fault').value })
-    : link === 'serial' ? new SerialTransport()
+    : link === 'serial' ? new SerialTransport({ allPorts: $('#opt-all-ports').checked })
     : new BleTransport({ acceptAll: $('#opt-all-devices').checked });
   transport.onDisconnect = onTransportLost;
   setConnState('connecting', sim ? 'Démarrage du simulateur…' : reuse ? 'Reconnexion…' : 'Choisissez votre adaptateur dans la fenêtre du navigateur…');
@@ -3345,6 +3352,7 @@ function showTab(tab) {
 function updateLinkOptions() {
   const link = $('#opt-link').value;
   $('#row-all-devices').classList.toggle('hidden', link !== 'ble');
+  $('#row-all-ports').classList.toggle('hidden', link !== 'serial');
   $('#sim-fault-row').classList.toggle('hidden', link !== 'sim');
   $('#link-help').textContent = {
     serial: `Appairez d'abord l'adaptateur dans les réglages Bluetooth du téléphone (code PIN 1234 ou 0000), puis choisissez-le dans la liste.${'serial' in navigator ? '' : ' ⚠ Non disponible dans ce navigateur : mettez Chrome à jour.'}`,
