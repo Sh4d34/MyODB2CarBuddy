@@ -1868,16 +1868,26 @@ class Analyzer {
 
     /* ---- 4. Chute brutale de pression ---- */
     if (!turbo) R.collapse = { status: 'na', value: '—', message: 'Non applicable (moteur atmosphérique).' };
-    else if (highLoad && loadHeld >= 1.0 && s.rpm >= 1500 && s.map != null) {
-      const w = this._win(1.6).filter((x) => x.map != null);
-      const peak = Math.max(...w.map((x) => x.map));
-      const minRpm = Math.min(...w.map((x) => x.rpm));
-      const drop = peak - s.map;
-      if (drop >= p.map.collapseDrop && s.rpm >= minRpm - 100) {
-        R.collapse = { status: 'alert', value: `−${fmtNum(drop)} kPa à ${fmtNum(s.rpm)} tr/min`,
+    else {
+      // Une chute n'est retenue que si le conducteur reste en charge 0,8 s plus tard : les valeurs
+      // (charge, pédale) arrivent avec un léger retard, et un lever de pied ressemble sinon à une chute.
+      const c = this.collapseCand;
+      if (c && (!highLoad || (s.pedal != null && c.pedal != null && s.pedal < c.pedal * 0.8))) this.collapseCand = null;
+      else if (c && now - c.t >= 800) {
+        this.collapseCand = null;
+        R.collapse = { status: 'alert', value: `−${fmtNum(c.drop)} kPa à ${fmtNum(c.rpm)} tr/min`,
           message: 'Chute de pression MAP détectée - Vérifier fuite d\'air / durite / géométrie turbo',
-          hint: 'Durite d\'intercooler qui se déboîte sous pression, collier desserré, échangeur percé, géométrie variable qui décroche, mise en sécurité (mode dégradé).' };
-      } else R.collapse = { status: 'ok', value: `Variation max ${fmtNum(Math.max(0, drop))} kPa`, message: 'Pression stable pendant l\'accélération.' };
+          hint: 'Pied maintenu, la pression retombe : durite d\'intercooler qui se déboîte sous pression, collier desserré, échangeur percé, géométrie variable qui décroche ou régulation qui coupe après une surpression (mode dégradé).' };
+      }
+      if (!R.collapse && highLoad && loadHeld >= 1.0 && s.rpm >= 1500 && s.map != null) {
+        const w = this._win(1.6).filter((x) => x.map != null);
+        const peak = Math.max(...w.map((x) => x.map));
+        const minRpm = Math.min(...w.map((x) => x.rpm));
+        const drop = peak - s.map;
+        if (drop >= p.map.collapseDrop && s.rpm >= minRpm - 100) {
+          if (!this.collapseCand) this.collapseCand = { t: now, drop, rpm: s.rpm, pedal: Math.max(...w.map((x) => x.pedal ?? -1)) };
+        } else if (!this.collapseCand) R.collapse = { status: 'ok', value: `Variation max ${fmtNum(Math.max(0, drop))} kPa`, message: 'Pression stable pendant l\'accélération.' };
+      }
     }
 
     /* ---- 5. Surpression ---- */
@@ -1931,12 +1941,13 @@ class Analyzer {
     /* ---- 9. Vanne EGR ---- */
     if (s.egrErr == null && (s.egrCmd == null || s.egrAct == null)) R.egr = { status: 'na', value: '—', message: 'Consigne / position EGR non transmises par le calculateur.' };
     else if (running) {
-      const w = this._win(2.5);
+      // Points à consigne stable uniquement : juste après un changement de consigne, l'écart est normal.
+      const w = this._win(5).filter((x, i, a) => i > 0 && x.egrCmd != null && a[i - 1].egrCmd != null && Math.abs(x.egrCmd - a[i - 1].egrCmd) < 5);
       const hint = 'Vanne EGR encrassée ou grippée (calamine), capteur de position, connectique. Une EGR qui reste ouverte fait chuter la puissance et la pression de turbo, et fait fumer noir.';
       const pairs = w.filter((x) => x.egrCmd != null && x.egrAct != null);
       if (highLoad && s.egrAct != null && s.egrAct > 15 && (s.egrCmd ?? 0) < 5) {
         R.egr = { status: 'alert', value: `réel ${fmtNum(s.egrAct)} % · consigne ${fmtNum(s.egrCmd)} %`, message: 'Vanne EGR restée ouverte en pleine charge.', hint };
-      } else if (pairs.length >= 2) {
+      } else if (pairs.length >= 6) {
         const gap = mean(pairs.map((x) => Math.abs(x.egrAct - x.egrCmd)));
         const value = `réel ${fmtNum(s.egrAct)} % · consigne ${fmtNum(s.egrCmd)} % (écart moyen ${fmtNum(gap)} pts)`;
         if (gap > 25) R.egr = { status: 'alert', value, message: 'La vanne EGR ne suit pas sa consigne.', hint };
@@ -1944,7 +1955,7 @@ class Analyzer {
         else R.egr = { status: 'ok', value, message: 'La vanne EGR suit sa consigne.' };
       } else {
         const errs = w.filter((x) => x.egrErr != null && (x.egrCmd == null || x.egrCmd > 10));
-        if (errs.length >= 2) {
+        if (errs.length >= 6) {
           const err = mean(errs.map((x) => Math.abs(x.egrErr)));
           const value = `erreur moyenne ${fmtNum(err)} %`;
           if (err > 50) R.egr = { status: 'alert', value, message: 'Forte erreur de position EGR signalée par le calculateur.', hint };
@@ -2209,7 +2220,9 @@ const AccelTest = {
       let collapse = null, peak = -Infinity;
       for (const x of this.points) {
         peak = Math.max(peak, x.map);
-        if (x.rpm >= 1500 && peak - x.map >= p.map.collapseDrop && !collapse) collapse = { rpm: x.rpm, drop: peak - x.map };
+        // Retenue seulement si l'accélération continue ensuite (sinon : lever de pied en fin de test)
+        const held = this.points.some((y) => y.t >= x.t + 800) && this.points.every((y) => y.t < x.t || y.t > x.t + 800 || y.load == null || y.load >= p.map.loadThreshold);
+        if (x.rpm >= 1500 && peak - x.map >= p.map.collapseDrop && held && !collapse) collapse = { rpm: x.rpm, drop: peak - x.map };
       }
       const lines = [`MAP maximale : <b>${fmtNum(maxMap)} kPa</b> (${fmtNum((maxMap - baro) / 100, 2)} bar relatifs)`];
       const findings = []; // { status, text } — le plus grave devient le titre
@@ -2311,6 +2324,7 @@ const PID_DEFS = {
   0x2D: { len: 1, decode: (d) => ({ egrErr: (d[0] * 100) / 128 - 100 }) },
   0x33: { len: 1, decode: (d) => ({ baro: d[0] }) },
   0x49: { len: 1, decode: (d) => ({ pedal: (d[0] * 100) / 255 }) },
+  0x5A: { len: 1, decode: (d) => ({ pedal: (d[0] * 100) / 255 }) },   // position relative (0 = pied levé), prioritaire sur 0149
   0x5E: { len: 2, decode: (d) => ({ fuelRate: u16(d[0], d[1]) / 20 }) },
   0x66: { len: 5, exp: true, decode: (d) => ({ maf: bit(d, 0) ? u16(d[1], d[2]) / 32 : null }) },
   0x69: { len: 7, exp: true, decode: (d) => ({
@@ -2354,7 +2368,7 @@ const PID_NAMES = {
   0x30: 'Chauffes depuis effacement', 0x31: 'Distance depuis effacement', 0x33: 'Pression atmosphérique',
   0x41: 'Moniteurs du cycle', 0x42: 'Tension calculateur', 0x45: 'Papillon relatif', 0x46: 'Temp. ambiante',
   0x47: 'Papillon B', 0x49: 'Pédale D', 0x4A: 'Pédale E', 0x4C: 'Papillon consigne', 0x4D: 'Temps avec MIL',
-  0x4E: 'Temps depuis effacement', 0x4F: 'Valeurs maxi (échelle MAP)', 0x50: 'Valeur maxi débit d\'air', 0x51: 'Type de carburant', 0x5C: 'Temp. huile', 0x5E: 'Débit carburant',
+  0x4E: 'Temps depuis effacement', 0x4F: 'Valeurs maxi (échelle MAP)', 0x50: 'Valeur maxi débit d\'air', 0x51: 'Type de carburant', 0x5A: 'Pédale (relative)', 0x5C: 'Temp. huile', 0x5E: 'Débit carburant',
   0x61: 'Couple demandé', 0x62: 'Couple réel', 0x63: 'Couple de référence', 0x64: 'Points de couple',
   0x65: 'Entrées/sorties auxiliaires', 0x66: 'Débit d\'air (MAF étendu)', 0x67: 'Temp. liquide (étendue)',
   0x68: 'Temp. air admission (étendue)', 0x69: 'EGR consigne / réel', 0x6A: 'Volet d\'admission consigne / réel',
@@ -2688,8 +2702,9 @@ function buildCycle(elm, cycle) {
     if (state.mapSource !== 0x70) list.push(0x70);
     list.push(ok(0x6D) ? 0x6D : 0x23, ok(0x66) ? 0x66 : 0x10, 0x71);
     if (ok(0x69)) list.push(0x69); else list.push(0x2C, 0x2D);
+    list.push(ok(0x5A) ? 0x5A : 0x49); // pédale : sert à distinguer un lever de pied d'une vraie chute de pression
   }
-  const slow = [0x05, 0x0F, 0x77, 0x49, 0x5E, 0x7A, 0x7C, 0x8B, 0x78, 0x74].filter(ok);
+  const slow = [0x05, 0x0F, 0x77, 0x5E, 0x7A, 0x7C, 0x8B, 0x78, 0x74].filter(ok);
   if (slow.length) list.push(slow[cycle % slow.length]);
   return [...new Set(list)].filter(ok);
 }
@@ -2940,7 +2955,7 @@ const ADV_CARDS = [
   { id: 'maf', label: 'Débit d\'air (MAF)', icon: 'air-vent', pids: [0x66, 0x10], act: 'maf', unit: 'g/s', dec: 1, color: '#34d399' },
   { id: 'iat', label: 'Température air admission', icon: 'thermometer-snowflake', pids: [0x0F], act: 'iat', unit: '°C', dec: 0, color: '#93c5fd' },
   { id: 'cact', label: 'Température air suralimenté', icon: 'thermometer-sun', pids: [0x77], act: 'cact', unit: '°C', dec: 0, color: '#fda4af' },
-  { id: 'pedal', label: 'Pédale d\'accélérateur', icon: 'footprints', pids: [0x49], act: 'pedal', unit: '%', dec: 0, color: '#c4b5fd' },
+  { id: 'pedal', label: 'Pédale d\'accélérateur', icon: 'footprints', pids: [0x5A, 0x49], act: 'pedal', unit: '%', dec: 0, color: '#c4b5fd' },
   { id: 'fuel', label: 'Débit carburant', icon: 'droplets', pids: [0x5E], act: 'fuelRate', unit: 'L/h', dec: 1, color: '#fcd34d' },
   { id: 'egt', label: 'Température échappement', icon: 'flame', pids: [0x78], act: 'egt', unit: '°C', dec: 0, color: '#fb923c' },
   { id: 'turbo', label: 'Régime turbo', icon: 'fan', pids: [0x74], act: 'turboRpm', unit: 'tr/min', dec: 0, color: '#fbbf24' },
