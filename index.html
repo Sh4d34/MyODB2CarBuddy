@@ -385,6 +385,7 @@
             </div>
             <p class="mt-1 text-xs text-zinc-500">Lecture directe de la mémoire défauts du calculateur moteur, comme le font les applis avancées. Contient des codes que le mode 03 ne renvoie pas toujours (voyant moteur rouge notamment).</p>
             <ul id="dtc-uds" class="mt-3 space-y-2"></ul>
+            <div id="dtc-uds-tests" class="mt-3 hidden border-t border-zinc-800 pt-3"></div>
           </div>
           <div class="card">
             <div class="flex items-center justify-between">
@@ -460,7 +461,8 @@
     <ul class="mt-4 list-disc space-y-1.5 pl-5 text-sm text-zinc-300">
       <li>Efface les codes confirmés et en attente, les <b>données figées</b> (freeze frame) et éteint le voyant moteur.</li>
       <li>Réinitialise les <b>moniteurs de disponibilité</b> (readiness) : à refaire avant un contrôle technique.</li>
-      <li>Si la panne est toujours présente, le code et le voyant reviendront.</li>
+      <li>Si la panne est toujours présente, le code et le voyant reviendront, mais <b>pas forcément au trajet suivant</b> : le calculateur doit d'abord refaire son contrôle, parfois après plusieurs trajets. Une absence de code juste après l'effacement ne prouve donc pas que la panne a disparu.</li>
+      <li>Avant un passage au garage, mieux vaut ne pas effacer : le code leur sert de point de départ.</li>
       <li>Procédure recommandée : <b>contact mis, moteur arrêté</b>.</li>
     </ul>
     <label class="mt-4 flex items-start gap-2.5 rounded-xl border border-zinc-800 bg-zinc-950/60 p-3 text-sm">
@@ -1061,7 +1063,7 @@ class SimTransport {
     this.connected = false;
     this.stored = ['0299', '2463', '0401'];
     this.pending = ['0101'];
-    this.mfr = [['2263', 0x22, 0xE9]]; // mémoire constructeur (UDS) : code invisible en mode 03
+    this.mfr = [['2263', 0x22, 0xE9], ['2263', 0x21, 0x50], ['0101', 0x00, 0x40]]; // mémoire constructeur (UDS) : P2263-22 invisible en mode 03
     this.baro = 100;
     this.vin = 'JN1DEMT32F0000001'; // VIN fictif de démonstration
     this.s = {
@@ -1294,7 +1296,9 @@ class SimTransport {
       const dtcs = [...this.stored.map((c) => [c, 0x00, 0x08]), ...this.mfr];
       ecm.push([0x59, 0x02, 0xFF, ...dtcs.flatMap(([c, ftb, st]) => [...this._dtcBytes([c]), ftb, st])]);
     } else if (mode === '04') {
-      this.stored = []; this.pending = []; this.mfr = [];
+      // Après effacement, les contrôles restent listés mais sont à refaire (statut 0x50)
+      this.mfr = [...this.stored.map((c) => [c, 0x00]), ...this.mfr].map(([c, ftb]) => [c, ftb, 0x50]);
+      this.stored = []; this.pending = [];
       ecm.push([0x44]);
     } else return null;
 
@@ -1660,7 +1664,8 @@ class ELM327 {
   /**
    * Mémoire défauts « constructeur » du calculateur moteur : UDS 19 02 FF en adressage physique (7E0 → 7E8).
    * Les calculateurs Renault-Nissan y rangent des codes que le mode 03 ne renvoie pas toujours.
-   * Renvoie null si non pris en charge (CAN 11 bits uniquement).
+   * Renvoie { faults, records } (records = tous les contrôles listés, faults = ceux en défaut),
+   * ou null si non pris en charge (CAN 11 bits uniquement).
    */
   async readUdsDtcs() {
     if (!this.isCan || this.protocol === 7 || this.protocol === 9) return null;
@@ -1677,13 +1682,14 @@ class ELM327 {
         return null;
       }
       // [59, 02, masque, puis par code : octet haut, octet bas, type de panne, statut]
-      const out = [];
+      const records = [];
       for (let i = 3; i + 3 < pos.data.length; i += 4) {
         const [a, b, ftb, status] = pos.data.slice(i, i + 4);
-        if ((!a && !b) || !(status & 0x8F)) continue; // ignore les codes jamais en défaut
-        out.push({ code: decodeDtc(a, b), ftb, status, ecu: pos.header });
+        if (!a && !b) continue;
+        records.push({ code: decodeDtc(a, b), ftb, status, ecu: pos.header });
       }
-      return out;
+      // En défaut : maintenant, en attente, confirmé, voyant demandé ou apparu depuis l'effacement
+      return { faults: records.filter((r) => r.status & 0xAF), records };
     } finally {
       await this.send('ATSH7DF').catch(() => {}); // retour à l'adressage OBD fonctionnel
     }
@@ -2298,7 +2304,7 @@ const state = {
   hist: {}, minmax: {},
   noData: {}, disabledPids: new Set(), rawLogged: new Set(),
   rate: 0, renderQueued: false,
-  dtc: { stored: null, pending: null, permanent: null, uds: null, counters: null, mil: null, at: null, ff: undefined },
+  dtc: { stored: null, pending: null, permanent: null, uds: null, udsRecords: null, counters: null, mil: null, at: null, ff: undefined },
 };
 const analyzer = new Analyzer();
 
@@ -3567,6 +3573,62 @@ function udsStatusLabels(st) {
   return out;
 }
 
+const udsKey = ({ code, ftb }) => `${code}-${hex2(ftb)}`;
+
+/**
+ * Codes constructeur déjà vus en défaut, mémorisés par profil : après un effacement, permet de savoir
+ * si le calculateur a refait le contrôle (le code ne revient pas tant que ce n'est pas le cas).
+ */
+const UdsWatch = {
+  key() { return `carbuddy.udsWatch.${state.profile.id}`; },
+  list() { try { return JSON.parse(localStorage.getItem(this.key()) || '[]'); } catch { return []; } },
+  add(faults) {
+    const cur = this.list();
+    const next = [...new Set([...cur, ...faults.map(udsKey)])];
+    if (next.length !== cur.length) try { localStorage.setItem(this.key(), JSON.stringify(next)); } catch { /* ignoré */ }
+  },
+  clear() { try { localStorage.removeItem(this.key()); } catch { /* ignoré */ } },
+};
+
+/** État des codes suivis qui ne sont pas en défaut actuellement. */
+function udsWatchStatus(d) {
+  if (!d.udsRecords) return [];
+  const faults = new Set((d.uds || []).map(udsKey));
+  const byKey = new Map(d.udsRecords.map((r) => [udsKey(r), r]));
+  return UdsWatch.list().filter((k) => !faults.has(k)).map((key) => {
+    const r = byKey.get(key);
+    if (!r) return { key, label: 'plus listé par le calculateur' };
+    if (r.status & 0x10) return { key, label: 'contrôle pas encore refait depuis l\'effacement' };
+    return { key, ok: true, label: 'contrôle refait, OK depuis l\'effacement' };
+  });
+}
+
+function renderUdsTests(d) {
+  const box = $('#dtc-uds-tests');
+  if (!d.udsRecords?.length) { box.innerHTML = ''; box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const watched = udsWatchStatus(d);
+  const untested = d.udsRecords.filter((r) => (r.status & 0x10) && !(r.status & 0xAF));
+  box.innerHTML = `
+    ${watched.length ? `
+      <div class="flex items-center justify-between gap-2">
+        <p class="text-xs font-semibold text-zinc-300">Codes déjà vus en défaut</p>
+        <button id="btn-uds-forget" class="btn btn-ghost btn-sm">Oublier</button>
+      </div>
+      <ul class="mt-1.5 space-y-1 text-xs">${watched.map((t) => `
+        <li class="flex flex-wrap items-baseline gap-x-2"><span class="font-mono font-bold text-zinc-200">${t.key}</span>
+          <span class="${t.ok ? 'text-emerald-300' : t.label.startsWith('contrôle') ? 'text-amber-300' : 'text-zinc-400'}">${t.label}</span></li>`).join('')}
+      </ul>` : ''}
+    ${untested.length ? `
+      <details class="${watched.length ? 'mt-2 ' : ''}text-xs text-zinc-500">
+        <summary class="cursor-pointer">${untested.length} contrôle${untested.length > 1 ? 's' : ''} sur ${d.udsRecords.length} pas encore refait${untested.length > 1 ? 's' : ''} depuis le dernier effacement</summary>
+        <p class="mt-1.5">Tant qu'un contrôle n'est pas refait, son code ne peut pas revenir : l'absence de code ne prouve pas que la panne a disparu.</p>
+        <div class="mt-1.5 flex flex-wrap gap-1">${untested.map((r) => `<span class="chip border-zinc-700 font-mono text-zinc-400">${udsKey(r)}</span>`).join('')}</div>
+      </details>`
+    : `<p class="text-xs text-zinc-500">Les ${d.udsRecords.length} contrôles listés ont tous été refaits depuis le dernier effacement.</p>`}`;
+  $('#btn-uds-forget')?.addEventListener('click', () => { UdsWatch.clear(); renderUdsTests(state.dtc); });
+}
+
 function renderDtcCounters(c) {
   const box = $('#dtc-counters');
   if (!c) { box.innerHTML = ''; box.classList.add('hidden'); return; }
@@ -3633,6 +3695,7 @@ function renderDtc() {
     $('#dtc-uds-count').textContent = 'n/d';
     $('#dtc-uds').innerHTML = '<li class="py-4 text-center text-xs text-zinc-500">Mémoire constructeur non accessible (voir la console).</li>';
   } else list(d.uds, '#dtc-uds', '#dtc-uds-count', ['border-red-500/50 bg-red-500/10 text-red-300', 'bg-red-500/15 text-red-300']);
+  renderUdsTests(d);
   if (d.at && d.permanent == null) {
     $('#dtc-permanent-count').textContent = 'n/d';
     $('#dtc-permanent').innerHTML = '<li class="py-4 text-center text-xs text-zinc-500">Le calculateur ne répond pas au mode 0A.</li>';
@@ -3701,8 +3764,12 @@ async function scanDtcs() {
     try { state.dtc.permanent = await elm.readDtcs('0A'); }
     catch (e) { Log.add('warn', `Mode 0A (codes permanents) non pris en charge : ${e.message}`); state.dtc.permanent = null; }
     state.dtc.counters = await readDtcCounters(elm);
-    try { state.dtc.uds = await elm.readUdsDtcs(); }
-    catch (e) { Log.add('warn', `Mémoire constructeur (UDS 19 02) : ${e.message}`); state.dtc.uds = null; }
+    try {
+      const u = await elm.readUdsDtcs();
+      state.dtc.uds = u?.faults ?? null;
+      state.dtc.udsRecords = u?.records ?? null;
+    } catch (e) { Log.add('warn', `Mémoire constructeur (UDS 19 02) : ${e.message}`); state.dtc.uds = null; state.dtc.udsRecords = null; }
+    if (state.dtc.uds) UdsWatch.add(state.dtc.uds);
     state.dtc.ff = null;
     if (state.dtc.stored.length) {
       try {
@@ -3717,6 +3784,7 @@ async function scanDtcs() {
     const n = state.dtc.stored.length + state.dtc.pending.length + perm.length + uds.length;
     const codes = (arr) => arr.map((x) => x.code).join(', ');
     Log.add(n ? 'warn' : 'ok', `Scan terminé : ${state.dtc.stored.length} confirmé(s) [${codes(state.dtc.stored)}], ${state.dtc.pending.length} en attente [${codes(state.dtc.pending)}], ${state.dtc.permanent ? `${perm.length} permanent(s) [${codes(perm)}]` : 'permanents non lus'}, ${state.dtc.uds ? `${uds.length} constructeur [${uds.map((x) => `${x.code}-${hex2(x.ftb)} statut 0x${hex2(x.status)}`).join(', ')}]` : 'mémoire constructeur non lue'}`);
+    for (const t of udsWatchStatus(state.dtc)) Log.add(t.ok ? 'ok' : 'info', `Suivi ${t.key} : ${t.label}.`);
     toast(n ? `${n} code(s) défaut trouvé(s).` : 'Aucun code défaut.', n ? 'warn' : 'ok');
   } catch (e) {
     Log.add('error', `Scan des défauts impossible : ${e.message}`);
